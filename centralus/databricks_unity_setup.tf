@@ -7,7 +7,6 @@ terraform {
   }
 }
 
-
 provider "databricks" {
   alias                     = "account"
   account_id                = "ccb842e7-2376-4152-b0b0-29fa952379b8"

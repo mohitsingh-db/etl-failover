@@ -11,7 +11,6 @@ resource "azurerm_storage_account" "dr_test_central_storage" {
   }
 }
 
-
 resource "azurerm_storage_container" "dr_test_central_external" {
   name                  = "external"
   storage_account_name  = azurerm_storage_account.dr_test_central_storage.name
@@ -23,4 +22,3 @@ resource "azurerm_storage_container" "dr_test_central_dr_sync" {
   storage_account_name  = azurerm_storage_account.dr_test_central_storage.name
   container_access_type = "private"
 }
-

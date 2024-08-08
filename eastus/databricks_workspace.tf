@@ -8,4 +8,3 @@ resource "azurerm_databricks_workspace" "dr_test_east_databricks" {
     Owner = "mohit.singh@databricks.com"
   }
 }
-

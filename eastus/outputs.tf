@@ -8,7 +8,6 @@ output "east_storage_account_name" {
   value       = azurerm_storage_account.dr_test_east_storage.name
 }
 
-
 output "east_databricks_workspace_name" {
   description = "The name of the East US Databricks workspace"
   value       = azurerm_databricks_workspace.dr_test_east_databricks.name

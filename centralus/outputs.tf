@@ -1,4 +1,3 @@
-
 output "resource_group_central_name" {
   description = "The name of the Central US resource group"
   value       = azurerm_resource_group.dr_test_central_us.name

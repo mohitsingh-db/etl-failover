@@ -7,5 +7,4 @@ resource "azurerm_databricks_workspace" "dr_test_central_databricks" {
   tags = {
     Owner = "mohit.singh@databricks.com"
   }
-
 }
