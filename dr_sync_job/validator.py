@@ -1,5 +1,3 @@
-from utils import check_fs_path, load_metadata_table, get_databricks_job_info, check_table
-
 def validate_config(config: dict) -> dict:
     """
     This function performs basic validation of the configuration JSON.
@@ -94,7 +92,7 @@ def validate_workflow_and_tables(config: dict) -> bool:
     - Validates access to external storage locations.
     - Ensures the existence and accessibility of metadata tables at specific subpaths in the storage locations.
     - Validates workflows and tables that haven't been validated yet, according to a pre-existing metadata table.
-    - Updates the metadata table upon successful validation.
+    - Collects validation results and merges them into the metadata table in one shot.
     - Logs issues and continues validation for other groups even if some fail.
 
     Args:
@@ -104,6 +102,7 @@ def validate_workflow_and_tables(config: dict) -> bool:
     - bool: True if all workflows and tables are valid, False otherwise.
     """
     all_valid = True
+    new_metadata_entries = []  # Collect new or updated metadata entries
 
     for workspace in config['workspaces']:
         print(f"Validating workspace: {workspace.get('workspace_name', 'Unnamed')}")
@@ -115,32 +114,34 @@ def validate_workflow_and_tables(config: dict) -> bool:
         # Check access to primary and secondary sync locations
         if not check_fs_path(meta_primary_path):
             print(f"Error: No access to 'meta' path at primary sync location '{meta_primary_path}' for workspace '{workspace['workspace_name']}'.")
-            return False
+            all_valid = False
+            continue
 
         if not check_fs_path(meta_secondary_path):
             print(f"Error: No access to 'meta' path at secondary sync location '{meta_secondary_path}' for workspace '{workspace['workspace_name']}'.")
-            return False
+            all_valid = False
+            continue
 
-        # Validate and update metadata from the primary location
-        metadata_table_path = f"{meta_primary_path}/sync_metadata_table"
-        metadata_table = load_metadata_table(metadata_table_path)
+        # Validate and load metadata from the primary location
+        primary_metadata_table_path = f"{meta_primary_path}/sync_metadata_table"
+        secondary_metadata_table_path = f"{meta_secondary_path}/sync_metadata_table"
+        metadata_table = load_metadata_table(primary_metadata_table_path)
 
         for group in workspace['sync_groups']:
             group_name = group.get('group_name', 'Unnamed')
 
             # Check if this group is already validated in the metadata table
-            validation_entry = metadata_table.get((workspace['workspace_name'], group_name))
+            validation_entry = metadata_table.get((workspace['workspace_name'], group_name), None)
 
             # Handle potential deletions and changes in configuration
             if validation_entry:
-                # If the group has been deleted from the configuration, remove it from the metadata table
+                # If the group has been deleted from the configuration, skip adding it to the new entries
                 if not any(g['group_name'] == group_name for g in workspace['sync_groups']):
                     print(f"Info: Sync group '{group_name}' no longer exists in configuration. Removing from metadata table.")
-                    delete_metadata_entry(metadata_table, workspace['workspace_name'], group_name)
                     continue
 
                 # Check for changes in workflow or tables
-                if (validation_entry['workflow'] != group.get('workflow')) or (validation_entry['tables'] != group.get('tables')):
+                if (validation_entry['workflow_name'] != group.get('workflow')) or (validation_entry['tables'] != group.get('tables')):
                     print(f"Info: Detected changes in sync group '{group_name}' configuration. Revalidating.")
                     validation_entry['validated'] = False  # Mark as not validated for revalidation
 
@@ -151,24 +152,31 @@ def validate_workflow_and_tables(config: dict) -> bool:
             # Validate workflow existence
             if group.get('workflow'):
                 try:
-                    # Use a separate method to handle API calls for better modularity and error handling
-                    workflow_info = get_databricks_job_info(workspace['workspace_instance_url'], workspace['workspace_pat_key'], group['workflow'])
-                    if not workflow_info:
+                    # Fetch the job info using the provided method for a single workflow
+                    job_info = get_databricks_jobs_info(workspace['workspace_instance_url'], workspace['workspace_pat_key'], [group['workflow']])
+
+                    if not job_info:
                         print(f"Error: Workflow '{group['workflow']}' does not exist for group '{group_name}' in workspace '{workspace['workspace_name']}'.")
                         all_valid = False
                         continue
                     else:
-                        workflow_id = workflow_info.get('job_id', None)
-                        validation_entry['workflow_id'] = workflow_id
+                        workflow_id = job_info.get(group['workflow'], None)
+                        validation_entry = {
+                            'workspace_name': workspace['workspace_name'],
+                            'group_name': group_name,
+                            'workflow_name': group.get('workflow'),
+                            'workflow_id': workflow_id,
+                            'tables': group.get('tables', []),
+                            'validated': False  # Mark as not validated until re-validation is done
+                        }
                 except Exception as e:
-                    print(f"Error: Could not validate workflow '{group['workflow']}' for group '{group_name}' in workspace '{workspace['workspace_name']}'. {e}")
+                    print(f"Error: Could not validate workflow '{group['workflow']}' for group '{group_name}' in workspace '{workspace['workspace_name']}': {e}")
                     all_valid = False
                     continue
 
             # Validate tables existence and read permissions
             for table in group['tables']:
                 try:
-                    # Use the check_table method to verify if the table exists and the user has read permissions
                     if not check_table(table):
                         print(f"Error: Cannot access table '{table}' for group '{group_name}' in workspace '{workspace['workspace_name']}'.")
                         all_valid = False
@@ -179,6 +187,12 @@ def validate_workflow_and_tables(config: dict) -> bool:
             # If validation was successful, update the metadata entry as validated
             if all_valid:
                 validation_entry['validated'] = True
-                update_metadata_table(metadata_table, validation_entry)
+                new_metadata_entries.append(validation_entry)
+
+    # Once all validations are done, merge new entries into the metadata table, only if new entries were found
+    if new_metadata_entries:
+        merge_metadata_entries(primary_metadata_table_path, new_metadata_entries, secondary_metadata_table_path)
+    else:
+        print("No new metadata entries found. Skipping metadata merge.")
 
     return all_valid
