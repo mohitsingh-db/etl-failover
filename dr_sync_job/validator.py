@@ -1,3 +1,4 @@
+# Databricks notebook source
 def validate_config(config: dict) -> dict:
     """
     This function performs basic validation of the configuration JSON.
@@ -16,6 +17,15 @@ def validate_config(config: dict) -> dict:
     - dict: The validated and potentially modified configuration dictionary.
     """
     validated_config = {"workspaces": []}
+
+    # Ensure 'secret_scope' is present
+    secret_scope = config.get("secret_scope")
+    if not secret_scope:
+        print("Error: 'secret_scope' is missing. Stopping job.")
+        return {}
+    
+    validated_config["secret_scope"] = secret_scope
+    
     for workspace in config['workspaces']:
         print(f"Validating workspace: {workspace.get('workspace_name', 'Unnamed')}")
 
@@ -85,7 +95,7 @@ def validate_config(config: dict) -> dict:
 
     return validated_config
 
-def validate_workflow_and_tables(config: dict) -> bool:
+def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary") -> bool:
     """
     This function performs detailed validation of workflows and tables within each workspace.
 
@@ -97,6 +107,7 @@ def validate_workflow_and_tables(config: dict) -> bool:
 
     Args:
     - config (dict): The configuration dictionary loaded from the JSON file.
+    - sync_location_to (str): Either 'primary' or 'secondary' to specify which sync location to validate.
 
     Returns:
     - bool: True if all workflows and tables are valid, False otherwise.
@@ -104,28 +115,26 @@ def validate_workflow_and_tables(config: dict) -> bool:
     all_valid = True
     new_metadata_entries = []  # Collect new or updated metadata entries
 
+    # Determine whether to use primary or secondary location
+    if sync_location_to not in ["primary", "secondary"]:
+        raise ValueError("sync_location_to must be either 'primary' or 'secondary'")
+
     for workspace in config['workspaces']:
         print(f"Validating workspace: {workspace.get('workspace_name', 'Unnamed')}")
 
-        # Check if the 'meta' subpath exists and has write access in both locations
-        meta_primary_path = f"{workspace.get('sync_location_primary')}/meta"
-        meta_secondary_path = f"{workspace.get('sync_location_secondary')}/meta"
-        
-        # Check access to primary and secondary sync locations
-        if not check_fs_path(meta_primary_path):
-            print(f"Error: No access to 'meta' path at primary sync location '{meta_primary_path}' for workspace '{workspace['workspace_name']}'.")
+        # Determine sync location based on parameter
+        sync_location = workspace.get(f"sync_location_{sync_location_to}")
+        meta_path = f"{sync_location}/meta"
+
+        # Check access to the sync location
+        if not check_fs_path(meta_path):
+            print(f"Error: No access to 'meta' path at {sync_location_to} sync location '{meta_path}' for workspace '{workspace['workspace_name']}'.")
             all_valid = False
             continue
 
-        if not check_fs_path(meta_secondary_path):
-            print(f"Error: No access to 'meta' path at secondary sync location '{meta_secondary_path}' for workspace '{workspace['workspace_name']}'.")
-            all_valid = False
-            continue
-
-        # Validate and load metadata from the primary location
-        primary_metadata_table_path = f"{meta_primary_path}/sync_metadata_table"
-        secondary_metadata_table_path = f"{meta_secondary_path}/sync_metadata_table"
-        metadata_table = load_metadata_table(primary_metadata_table_path)
+        # Load metadata from the specified location
+        metadata_table_path = f"{meta_path}/sync_metadata_table"
+        metadata_table = load_metadata_table(metadata_table_path)
 
         for group in workspace['sync_groups']:
             group_name = group.get('group_name', 'Unnamed')
@@ -152,8 +161,13 @@ def validate_workflow_and_tables(config: dict) -> bool:
             # Validate workflow existence
             if group.get('workflow'):
                 try:
-                    # Fetch the job info using the provided method for a single workflow
-                    job_info = get_databricks_jobs_info(workspace['workspace_instance_url'], workspace['workspace_pat_key'], [group['workflow']])
+                    # Fetch the job info using the provided method, retrieve PAT token and scope from config
+                    job_info = get_databricks_jobs_info(
+                        workspace['workspace_instance_url'], 
+                        config.get('secret_scope'),  # Pass the secret scope from config
+                        workspace['workspace_pat_key'], 
+                        [group['workflow']]
+                    )
 
                     if not job_info:
                         print(f"Error: Workflow '{group['workflow']}' does not exist for group '{group_name}' in workspace '{workspace['workspace_name']}'.")
@@ -191,7 +205,7 @@ def validate_workflow_and_tables(config: dict) -> bool:
 
     # Once all validations are done, merge new entries into the metadata table, only if new entries were found
     if new_metadata_entries:
-        merge_metadata_entries(primary_metadata_table_path, new_metadata_entries, secondary_metadata_table_path)
+        merge_metadata_entries(metadata_table_path, new_metadata_entries)
     else:
         print("No new metadata entries found. Skipping metadata merge.")
 

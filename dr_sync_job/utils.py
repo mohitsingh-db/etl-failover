@@ -1,6 +1,78 @@
+# Databricks notebook source
 import requests
 import pytz
+import json
 from datetime import datetime
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, BooleanType, TimestampType
+from pyspark.sql import DataFrame
+
+
+def load_config(file_path: str) -> dict:
+    with open(file_path, 'r') as file:
+        config = json.load(file)
+    return config
+
+def find_workspace_config(workspace_name: str, validated_config: dict) -> dict:
+    """
+    Finds and returns the corresponding workspace configuration from the validated config.
+
+    Args:
+    - workspace_name (str): The name of the workspace.
+    - validated_config (dict): The validated configuration containing workspace details.
+
+    Returns:
+    - dict: The workspace configuration if found, otherwise None.
+    """
+    for workspace in validated_config['workspaces']:
+        if workspace['workspace_name'] == workspace_name:
+            return workspace
+    return None
+    
+def update_metadata_status(metadata_table_path, workspace_name, group_name, status, sync_time=None):
+    """
+    Updates the metadata table with the current status and sync timestamp.
+
+    Args:
+    - metadata_table_path (str): Path to the metadata Delta table.
+    - workspace_name (str): The workspace name of the group.
+    - group_name (str): The group name.
+    - status (str): The sync status ('In Progress' or 'Success').
+    - sync_time (str, optional): The last sync time, updated upon success.
+
+    Returns:
+    - None
+    """
+    try:
+        # Load the current metadata table
+        metadata_df = spark.read.format("delta").load(metadata_table_path)
+        
+        # Update the status and timestamp for the specific workspace and group
+        updated_metadata_df = metadata_df.withColumn(
+            "sync_status",
+            F.when(
+                (metadata_df["workspace_name"] == workspace_name) &
+                (metadata_df["group_name"] == group_name),
+                F.lit(status)
+            ).otherwise(metadata_df["sync_status"])
+        )
+        
+        if sync_time:
+            updated_metadata_df = updated_metadata_df.withColumn(
+                "last_successful_run_time",
+                F.when(
+                    (metadata_df["workspace_name"] == workspace_name) &
+                    (metadata_df["group_name"] == group_name),
+                    F.lit(sync_time)
+                ).otherwise(metadata_df["last_successful_run_time"])
+            )
+        
+        # Overwrite the metadata table with the updated data
+        updated_metadata_df.write.format("delta").mode("overwrite").save(metadata_table_path)
+
+        log_message("debug", f"Metadata updated for {workspace_name}/{group_name}: Status = {status}, Sync Time = {sync_time}")
+    
+    except Exception as e:
+        log_message("info", f"Failed to update metadata for {workspace_name}/{group_name}: {e}")
 
 def check_fs_path(path: str) -> bool:
     """
@@ -86,9 +158,37 @@ def load_metadata_table(path: str) -> dict:
 
     except Exception as e:
         print(f"Error loading metadata table from path: {path}. Error: {e}")
+        print(f"Creating a new metadata table at path: {path}")
+        create_empty_metadata_table(path)
         return {}
 
-def get_databricks_jobs_info(instance_url: str, pat_token: str, workflow_names: list) -> dict:
+def create_empty_metadata_table(path: str):
+    """
+    Creates an empty metadata Delta table at the specified path.
+
+    Args:
+    - path (str): The path where the Delta table will be created.
+    """
+    # Define the schema of the metadata table
+    schema = StructType([
+        StructField("workspace_name", StringType(), False),
+        StructField("group_name", StringType(), False),
+        StructField("workflow_name", StringType(), False),
+        StructField("workflow_id", StringType(), False),
+        StructField("tables", ArrayType(StringType()), False),
+        StructField("validated", BooleanType(), False),
+        StructField("last_successful_run_time", TimestampType(), True),
+        StructField("sync_status", StringType(), True)
+    ])
+
+    # Create an empty DataFrame with the defined schema
+    empty_df = spark.createDataFrame([], schema)
+
+    # Write the empty DataFrame as a Delta table
+    empty_df.write.format("delta").mode("overwrite").save(path)
+    print(f"Empty metadata table created at: {path}")
+
+def get_databricks_jobs_info(instance_url: str, pat_scope: str, pat_token: str, workflow_names: list) -> dict:
     """
     Retrieves job information from Databricks REST API for a list of workflows using API version 2.1 with pagination.
 
@@ -101,12 +201,13 @@ def get_databricks_jobs_info(instance_url: str, pat_token: str, workflow_names: 
     - dict: A dictionary with workflow names as keys and their corresponding job IDs as values.
     """
     try:
+        pat = retrieve_pat_token(pat_scope, pat_token)
         # Construct the API endpoint URL for Jobs API 2.1
         endpoint = f"{instance_url}/api/2.1/jobs/list"
 
         # Set up the headers for the API request
         headers = {
-            "Authorization": f"Bearer {pat_token}"
+            "Authorization": f"Bearer {pat}"
         }
 
         # Initialize variables for pagination
@@ -148,7 +249,7 @@ def get_databricks_jobs_info(instance_url: str, pat_token: str, workflow_names: 
         print(f"Error fetching job info for workflows '{workflow_names}': {e}")
         return {}
 
-def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids: list, last_run_timestamp_str: str) -> dict:
+def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids: list, last_run_timestamp_str: str = None) -> dict:
     """
     Checks if any of the given Databricks jobs have had successful runs after the last recorded run timestamp.
 
@@ -156,15 +257,19 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
     - instance_url (str): The URL of the Databricks instance.
     - pat_token (str): The PAT token for authentication.
     - job_ids (list): A list of job IDs to check.
-    - last_run_timestamp_str (str): The timestamp of the last recorded run in UTC format "yyyy-mm-dd hh:mm:ss".
+    - last_run_timestamp_str (str, optional): The timestamp of the last recorded run in UTC format "yyyy-mm-dd hh:mm:ss".
+      If None, the function will return the latest successful run without comparison.
 
     Returns:
     - dict: A dictionary where the keys are job IDs and the values are the last successful run end timestamps.
             If no successful run is found after the given timestamp, the value will be None.
     """
     try:
-        # Convert the input timestamp string to a datetime object in UTC
-        last_run_timestamp = datetime.strptime(last_run_timestamp_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
+        if last_run_timestamp_str is not None:
+            # Convert the input timestamp string to a datetime object in UTC
+            last_run_timestamp = datetime.strptime(last_run_timestamp_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
+        else:
+            last_run_timestamp = None
 
         # Set up the headers for the API request
         headers = {
@@ -201,7 +306,12 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
                 run_end_datetime = datetime.fromtimestamp(run_end_time, tz=pytz.UTC)
                 run_result_state = run.get("state", {}).get("result_state")
 
-                if run_end_datetime > last_run_timestamp and run_result_state == "SUCCESS":
+                if last_run_timestamp is None:
+                    # If no last run timestamp is provided, return the latest successful run
+                    if run_result_state == "SUCCESS":
+                        last_successful_run_end_time = run_end_datetime.strftime("%Y-%m-%d %H:%M:%S")
+                        break
+                elif run_end_datetime > last_run_timestamp and run_result_state == "SUCCESS":
                     last_successful_run_end_time = run_end_datetime.strftime("%Y-%m-%d %H:%M:%S")
                     break  # Exit the loop early as we found a successful run
 
@@ -227,7 +337,7 @@ def retrieve_pat_token(secret_scope: str, pat_key: str) -> str:
     """
     try:
         # Use Databricks utilities to fetch the PAT token
-        pat_token = dbutils.secrets.get(scope=secret_scope, key=pat_key)
+        pat_token = dbutils.secrets.get("dr-test-scope", key=pat_key)
         print(f"Successfully retrieved PAT token for secret scope: {secret_scope}, key: {pat_key}")
         return pat_token
     except Exception as e:
@@ -258,9 +368,9 @@ def check_table(table: str) -> bool:
         print(f"Error checking read permission for table '{table}': {e}")
         return False
     
-def merge_metadata_entries(metadata_table_path: str, new_entries: list, secondary_metadata_table_path: str) -> None:
+def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
     """
-    Merge new entries into the Delta metadata table and deep clone it to the secondary location.
+    Merge new entries into the Delta metadata table.
 
     Args:
     - metadata_table_path (str): The Delta table path in the primary sync location.
@@ -271,7 +381,6 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list, secondar
       - workflow_id (str)
       - tables (list of str)
       - validated (bool)
-    - secondary_metadata_table_path (str): The path where the metadata table should be deep cloned to.
 
     Returns:
     - None
@@ -323,10 +432,7 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list, secondar
         schema=metadata_df.schema
     )
 
-    # Step 3: Write the updated metadata table back to the primary location
+    # Step 3: Write the updated metadata table back to the location
     updated_metadata_df.write.format("delta").mode("overwrite").save(metadata_table_path)
 
-    # Step 4: Deep clone the updated metadata table to the secondary location
-    spark.sql(f"CREATE OR REPLACE TABLE delta.`{secondary_metadata_table_path}` DEEP CLONE delta.`{metadata_table_path}`")
-
-    print(f"Metadata table has been merged and deep cloned to the secondary location: {secondary_metadata_table_path}")
+    print(f"Metadata table has been merged and updated at the location: {metadata_table_path}")
