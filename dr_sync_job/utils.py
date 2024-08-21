@@ -7,6 +7,21 @@ from pyspark.sql.types import StructType, StructField, StringType, ArrayType, Bo
 from pyspark.sql import DataFrame
 
 
+def log_message(level: str, message: str):
+    """
+    Logs a message based on the current global log level.
+
+    Args:
+    - level (str): The level of the message ('debug', 'info', or 'error').
+    - message (str): The message to be logged.
+    """
+    global LOG_LEVEL
+    levels = {"debug": 1, "info": 2, "error": 3}  # Logging levels priority
+
+    # Log the message only if the level is equal to or higher than the current log level
+    if levels.get(level, 0) >= levels.get(LOG_LEVEL, 0):
+        print(f"{level.upper()}: {message}")
+
 def load_config(file_path: str) -> dict:
     with open(file_path, 'r') as file:
         config = json.load(file)
@@ -28,51 +43,54 @@ def find_workspace_config(workspace_name: str, validated_config: dict) -> dict:
             return workspace
     return None
     
-def update_metadata_status(metadata_table_path, workspace_name, group_name, status, sync_time=None):
+def update_metadata_status(metadata_table_path: str, workspace_name: str, group_name: str, 
+                           status: str = None, sync_time: str = None, sync_time_to_region: str = None, sync_time_in_region: str = None):
     """
-    Updates the metadata table with the current status and sync timestamp.
+    Updates the metadata table with the current status and sync timestamps for the regions.
 
     Args:
     - metadata_table_path (str): Path to the metadata Delta table.
     - workspace_name (str): The workspace name of the group.
     - group_name (str): The group name.
-    - status (str): The sync status ('In Progress' or 'Success').
-    - sync_time (str, optional): The last sync time, updated upon success.
+    - status (str, optional): The sync status ('In Progress' or 'Success').
+    - sync_time (str, optional): The last sync time.
+    - sync_time_to_region (str, optional): The sync timestamp for the "to" region.
+    - sync_time_in_region (str, optional): The sync timestamp for the "in" region.
 
     Returns:
     - None
     """
     try:
-        # Load the current metadata table
-        metadata_df = spark.read.format("delta").load(metadata_table_path)
+        # Start constructing the SQL query
+        update_query = f"UPDATE delta.`{metadata_table_path}` SET "
         
-        # Update the status and timestamp for the specific workspace and group
-        updated_metadata_df = metadata_df.withColumn(
-            "sync_status",
-            F.when(
-                (metadata_df["workspace_name"] == workspace_name) &
-                (metadata_df["group_name"] == group_name),
-                F.lit(status)
-            ).otherwise(metadata_df["sync_status"])
-        )
+        # List to hold column update expressions
+        update_columns = []
         
-        if sync_time:
-            updated_metadata_df = updated_metadata_df.withColumn(
-                "last_successful_run_time",
-                F.when(
-                    (metadata_df["workspace_name"] == workspace_name) &
-                    (metadata_df["group_name"] == group_name),
-                    F.lit(sync_time)
-                ).otherwise(metadata_df["last_successful_run_time"])
-            )
+        # Add non-None values to the update query
+        if status is not None:
+            update_columns.append(f"sync_status = '{status}'")
+        if sync_time is not None:
+            update_columns.append(f"last_successful_run_time = '{sync_time}'")
+        if sync_time_to_region is not None:
+            update_columns.append(f"sync_time_to_region = '{sync_time_to_region}'")
+        if sync_time_in_region is not None:
+            update_columns.append(f"sync_time_in_region = '{sync_time_in_region}'")
         
-        # Overwrite the metadata table with the updated data
-        updated_metadata_df.write.format("delta").mode("overwrite").save(metadata_table_path)
-
-        log_message("debug", f"Metadata updated for {workspace_name}/{group_name}: Status = {status}, Sync Time = {sync_time}")
+        # Join all update columns to form the SET part of the SQL query
+        update_query += ", ".join(update_columns)
+        
+        # Add WHERE clause to filter by workspace_name and group_name
+        update_query += f" WHERE workspace_name = '{workspace_name}' AND group_name = '{group_name}'"
+        
+        # Execute the update query
+        log_message("debug", f"Executing SQL update: {update_query}")
+        spark.sql(update_query)
+        
+        log_message("debug", f"Metadata updated for {workspace_name}/{group_name} with the following: {update_columns}")
     
     except Exception as e:
-        log_message("info", f"Failed to update metadata for {workspace_name}/{group_name}: {e}")
+        log_message("error", f"Failed to update metadata for {workspace_name}/{group_name}: {e}")
 
 def check_fs_path(path: str) -> bool:
     """
@@ -93,16 +111,16 @@ def check_fs_path(path: str) -> bool:
 
         # Confirm the file was written by checking its existence
         if dbutils.fs.ls(path):
-            print(f"Access check successful at path: {path}")
+            log_message("debug",f"Access check successful at path: {path}")
 
             # Clean up by deleting the temporary file
             dbutils.fs.rm(temp_file_path)
             return True
         else:
-            print(f"Error: Could not confirm the creation of the file at path: {path}")
+            log_message("debug",f"Could not confirm the creation of the file at path: {path}")
             return False
     except Exception as e:
-        print(f"Access check failed at path: {path}. Error: {e}")
+        log_message("error",f"Access check failed at path: {path}. Error: {e}")
         return False
 
 def load_metadata_table(path: str) -> dict:
@@ -121,7 +139,9 @@ def load_metadata_table(path: str) -> dict:
             "tables": [<table1>, <table2>, ...],
             "validated": <validated_status>,
             "last_successful_run_time": <last_successful_run_time>,
-            "sync_status": <sync_status>
+            "sync_status": <sync_status>,
+            "sync_time_to_region": <sync_time_to_region>,
+            "sync_time_in_region": <sync_time_in_region>
         }
       }
     """
@@ -142,6 +162,8 @@ def load_metadata_table(path: str) -> dict:
             validated = row['validated']
             last_successful_run_time = row['last_successful_run_time']
             sync_status = row['sync_status']
+            sync_time_to_region = row('sync_time_to_region', None)  
+            sync_time_in_region = row('sync_time_in_region', None) 
 
             # Add the metadata to the dictionary
             metadata_dict[(workspace_name, group_name)] = {
@@ -150,16 +172,19 @@ def load_metadata_table(path: str) -> dict:
                 "tables": tables,
                 "validated": validated,
                 "last_successful_run_time": last_successful_run_time,
-                "sync_status": sync_status
+                "sync_status": sync_status,
+                "sync_time_to_region": sync_time_to_region,
+                "sync_time_in_region": sync_time_in_region
             }
 
-        print(f"Metadata table loaded successfully from: {path}")
+        log_message("debug",f"Metadata table loaded successfully from: {path}")
         return metadata_dict
 
     except Exception as e:
-        print(f"Error loading metadata table from path: {path}. Error: {e}")
-        print(f"Creating a new metadata table at path: {path}")
-        create_empty_metadata_table(path)
+        log_message("debug",f"Error loading metadata table from path: {path}. Error: {e}")
+        log_message("debug",f"Creating a new metadata table at path: {path}")
+        if not dbutils.fs.ls(path):
+            create_empty_metadata_table(path)
         return {}
 
 def create_empty_metadata_table(path: str):
@@ -169,7 +194,7 @@ def create_empty_metadata_table(path: str):
     Args:
     - path (str): The path where the Delta table will be created.
     """
-    # Define the schema of the metadata table
+    # Define the schema of the metadata table, including new columns
     schema = StructType([
         StructField("workspace_name", StringType(), False),
         StructField("group_name", StringType(), False),
@@ -178,7 +203,9 @@ def create_empty_metadata_table(path: str):
         StructField("tables", ArrayType(StringType()), False),
         StructField("validated", BooleanType(), False),
         StructField("last_successful_run_time", TimestampType(), True),
-        StructField("sync_status", StringType(), True)
+        StructField("sync_status", StringType(), True),
+        StructField("sync_time_to_region", TimestampType(), True), 
+        StructField("sync_time_in_region", TimestampType(), True)
     ])
 
     # Create an empty DataFrame with the defined schema
@@ -186,7 +213,7 @@ def create_empty_metadata_table(path: str):
 
     # Write the empty DataFrame as a Delta table
     empty_df.write.format("delta").mode("overwrite").save(path)
-    print(f"Empty metadata table created at: {path}")
+    log_message("debug",f"Empty metadata table created at: {path}")
 
 def get_databricks_jobs_info(instance_url: str, pat_scope: str, pat_token: str, workflow_names: list) -> dict:
     """
@@ -246,7 +273,7 @@ def get_databricks_jobs_info(instance_url: str, pat_scope: str, pat_token: str, 
         return jobs_info
 
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching job info for workflows '{workflow_names}': {e}")
+        log_message("error",f"Error fetching job info for workflows '{workflow_names}': {e}")
         return {}
 
 def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids: list, last_run_timestamp_str: str = None) -> dict:
@@ -306,12 +333,15 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
                 run_end_datetime = datetime.fromtimestamp(run_end_time, tz=pytz.UTC)
                 run_result_state = run.get("state", {}).get("result_state")
 
+                run_end_datetime = run_end_datetime.replace(microsecond=0)
+
                 if last_run_timestamp is None:
                     # If no last run timestamp is provided, return the latest successful run
                     if run_result_state == "SUCCESS":
                         last_successful_run_end_time = run_end_datetime.strftime("%Y-%m-%d %H:%M:%S")
                         break
                 elif run_end_datetime > last_run_timestamp and run_result_state == "SUCCESS":
+                    log_message("debug",f"run_end_datetime is {run_end_datetime} and last_run_timestamp is {last_run_timestamp}")
                     last_successful_run_end_time = run_end_datetime.strftime("%Y-%m-%d %H:%M:%S")
                     break  # Exit the loop early as we found a successful run
 
@@ -321,7 +351,7 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
         return successful_runs
 
     except requests.exceptions.RequestException as e:
-        print(f"Error checking job runs: {e}")
+        log_message("error",f"Error checking job runs: {e}")
         return {}
 
 def retrieve_pat_token(secret_scope: str, pat_key: str) -> str:
@@ -338,10 +368,10 @@ def retrieve_pat_token(secret_scope: str, pat_key: str) -> str:
     try:
         # Use Databricks utilities to fetch the PAT token
         pat_token = dbutils.secrets.get("dr-test-scope", key=pat_key)
-        print(f"Successfully retrieved PAT token for secret scope: {secret_scope}, key: {pat_key}")
+        log_message("debug",f"Successfully retrieved PAT token for secret scope: {secret_scope}, key: {pat_key}")
         return pat_token
     except Exception as e:
-        print(f"Error retrieving PAT token from secret scope: {secret_scope}, key: {pat_key}. Error: {e}")
+        log_message("error",f"Error retrieving PAT token from secret scope: {secret_scope}, key: {pat_key}. Error: {e}")
         return None
     
 def check_table(table: str) -> bool:
@@ -359,18 +389,19 @@ def check_table(table: str) -> bool:
         if spark.catalog.tableExists(table):
             # Try to describe the table's metadata to ensure read access
             spark.catalog.listColumns(table)
-            print(f"Read permission confirmed for table {table}.")
+            log_message("debug",f"Read permission confirmed for table {table}.")
             return True
         else:
-            print(f"Table '{table}' does not exist.")
+            log_message("debug",f"Table '{table}' does not exist.")
             return False
     except Exception as e:
-        print(f"Error checking read permission for table '{table}': {e}")
+        log_message("error",f"Error checking read permission for table '{table}': {e}")
         return False
     
 def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
     """
-    Merge new entries into the Delta metadata table.
+    Merge new entries into the Delta metadata table using the MERGE INTO SQL command.
+    Insert new entries, update existing entries only when specific columns differ, and delete entries that no longer exist in the source.
 
     Args:
     - metadata_table_path (str): The Delta table path in the primary sync location.
@@ -385,54 +416,64 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
     Returns:
     - None
     """
+    try:
+        # Convert the new entries list into a DataFrame
+        new_entries_df = spark.createDataFrame(new_entries)
 
-    # Step 1: Load the existing metadata table from the primary location
-    metadata_df = spark.read.format("delta").load(metadata_table_path)
+        # Step 1: Create a temporary view from new_entries
+        new_entries_df.createOrReplaceTempView("new_metadata")
 
-    # Convert the DataFrame to a dictionary for easy manipulation
-    metadata_dict = {
-        (row['workspace_name'], row['group_name']): row.asDict()
-        for row in metadata_df.collect()
-    }
+        # Step 2: Use the MERGE INTO command to merge the new entries into the Delta table
+        merge_sql = f"""
+            MERGE INTO delta.`{metadata_table_path}` AS target
+            USING new_metadata AS source
+            ON target.workspace_name = source.workspace_name
+            AND target.group_name = source.group_name
+            WHEN MATCHED AND 
+                (target.workflow_name != source.workflow_name
+                OR target.tables != source.tables
+                OR target.validated != source.validated) 
+            THEN 
+                UPDATE SET 
+                    target.workflow_name = source.workflow_name,
+                    target.tables = source.tables,
+                    target.validated = source.validated,
+                    target.last_successful_run_time = NULL,
+                    target.sync_status = NULL,
+                    target.sync_time_to_region = NULL,
+                    target.sync_time_in_region = NULL
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    workspace_name, 
+                    group_name, 
+                    workflow_name, 
+                    workflow_id, 
+                    tables, 
+                    validated, 
+                    last_successful_run_time, 
+                    sync_status,
+                    sync_time_to_region,
+                    sync_time_in_region
+                ) VALUES (
+                    source.workspace_name, 
+                    source.group_name, 
+                    source.workflow_name, 
+                    source.workflow_id, 
+                    source.tables, 
+                    source.validated, 
+                    NULL, 
+                    NULL,
+                    NULL,
+                    NULL
+                )
+            WHEN NOT MATCHED BY SOURCE THEN
+                DELETE
+        """
 
-    # Step 2: Merge the new entries with the existing metadata
-    new_entries_dict = {
-        (entry['workspace_name'], entry['group_name']): entry
-        for entry in new_entries
-    }
+        # Step 3: Execute the merge SQL
+        spark.sql(merge_sql)
 
-    # Identify entries to delete
-    keys_to_delete = set(metadata_dict.keys()) - set(new_entries_dict.keys())
-    for key in keys_to_delete:
-        print(f"Deleting entry for group '{key[1]}' in workspace '{key[0]}' from metadata table.")
-        del metadata_dict[key]
+        log_message("debug",f"Metadata table merged successfully at: {metadata_table_path}")
 
-    # Update or add new entries
-    for key, new_entry in new_entries_dict.items():
-        if key in metadata_dict:
-            existing_entry = metadata_dict[key]
-            # Update only the workflow_name, tables, and validated fields
-            if (
-                existing_entry['workflow_name'] != new_entry['workflow_name'] or
-                set(existing_entry['tables']) != set(new_entry['tables']) or
-                existing_entry['validated'] != new_entry['validated']
-            ):
-                print(f"Updating specific columns for group '{key[1]}' in workspace '{key[0]}'.")
-                existing_entry['workflow_name'] = new_entry['workflow_name']
-                existing_entry['tables'] = new_entry['tables']
-                existing_entry['validated'] = new_entry['validated']
-                metadata_dict[key] = existing_entry
-        else:
-            print(f"Adding new entry for group '{key[1]}' in workspace '{key[0]}'.")
-            metadata_dict[key] = new_entry
-
-    # Convert the updated metadata dictionary back to a DataFrame
-    updated_metadata_df = spark.createDataFrame(
-        data=list(metadata_dict.values()),
-        schema=metadata_df.schema
-    )
-
-    # Step 3: Write the updated metadata table back to the location
-    updated_metadata_df.write.format("delta").mode("overwrite").save(metadata_table_path)
-
-    print(f"Metadata table has been merged and updated at the location: {metadata_table_path}")
+    except Exception as e:
+        log_message("error",f"Error during metadata merge: {e}")

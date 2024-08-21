@@ -7,22 +7,6 @@ from pyspark.sql import functions as F
 
 # Global variable to collect info-level logs for successful workflows
 successful_workflows = []
-LOG_LEVEL = "info"  # Default log level
-
-def log_message(level: str, message: str):
-    """
-    Logs a message based on the current global log level.
-
-    Args:
-    - level (str): The level of the message ('debug' or 'info').
-    - message (str): The message to be logged.
-    """
-    global LOG_LEVEL
-    levels = {"debug": 1, "info": 2}  # Logging levels priority
-
-    if levels.get(level, 0) >= levels.get(LOG_LEVEL, 0):
-        print(f"{level.upper()}: {message}")
-
 
 def process_workflow_to_region(workflow_data, instance_url, pat_token, target_location, metadata_table_path):
     """
@@ -76,7 +60,8 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
         # Step 3: If workflow_id exists and validated, check the workflow run
         if workflow_id:
             if validated:
-                successful_runs = job_successful_run_after_last_run(instance_url, pat_token, [workflow_id], last_sync_time.strftime("%Y-%m-%d %H:%M:%S"))
+                successful_runs = job_successful_run_after_last_run(instance_url, pat_token, [workflow_id], last_sync_time)
+                log_message("debug", f"Found successful runs for workflow {workflow_id} after {last_sync_time} as {successful_runs}")
                 if workflow_id not in successful_runs or not successful_runs[workflow_id]:
                     log_message("debug", f"No successful runs found for workflow {workflow_id} after {last_sync_time}. Skipping sync.")
                     return
@@ -134,7 +119,7 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
 
         # Step 5: After successful cloning, update metadata to 'Success' and set sync time
         sync_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        update_metadata_status(metadata_table_path, workspace_name, group_name, "Success", last_successful_timestamp)
+        update_metadata_status(metadata_table_path, workspace_name, group_name, "Success", last_successful_timestamp, sync_time)
         log_message("debug", f"Set 'Success' status for {workspace_name}/{group_name}")
 
         # Log summary info
@@ -149,10 +134,10 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
         })
     
     except Exception as e:
-        log_message("info", f"Error processing workflow {workspace_name}/{group_name}: {e}")
+        log_message("error", f"Error processing workflow {workspace_name}/{group_name}: {e}")
 
 
-def sync_to_region(validated_config: dict, sync_location_to: str = "primary", sync_interval_hours: int = 10, max_workers: int = 10, logging_level: str = "info"):
+def sync_to_region(validated_config: dict, sync_location_to: str = "primary", sync_interval_hours: int = 10, max_workers: int = 10):
     """
     Syncs Delta tables from metadata with multi-threading and two levels of logging: debug and info.
 
@@ -166,8 +151,6 @@ def sync_to_region(validated_config: dict, sync_location_to: str = "primary", sy
     Returns:
     - None
     """
-    global LOG_LEVEL
-    LOG_LEVEL = logging_level  # Set the global log level
 
     global successful_workflows
     successful_workflows = []  # Reset the global successful workflow list
@@ -221,13 +204,11 @@ def sync_to_region(validated_config: dict, sync_location_to: str = "primary", sy
                     log_message("info", f"Error processing workflow: {e}")
 
         # Step 6: Display summary in info mode
-        if LOG_LEVEL == "info" and successful_workflows:
-            summary_df = pd.DataFrame(successful_workflows)
-            summary_df = summary_df.drop(columns=['validated'], errors='ignore')  # Dropping 'validated' if exists
-            log_message("info", "Summary of successfully synced workflows:")
-            log_message("info", summary_df.to_string(index=False))  # Print the dataframe without index
-
+        summary_df = pd.DataFrame(successful_workflows)
+        summary_df = summary_df.drop(columns=['validated'], errors='ignore')  # Dropping 'validated' if exists
+        log_message("info", "Summary of successfully synced workflows:")
+        log_message("info", summary_df.to_string(index=False))  # Print the dataframe without index
         log_message("info", "Sync completed successfully.")
 
     except Exception as e:
-        log_message("info", f"Error during sync process: {e}")
+        log_message("error", f"Error during sync process: {e}")

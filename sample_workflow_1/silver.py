@@ -18,6 +18,10 @@ silver_df = (bronze_df.withColumn("parsed_data", bronze_df["content"].cast("stri
 # Save the parsed data to a Silver table
 silver_df.write.format("delta").mode("overwrite").saveAsTable("humana.stage.workflow_1_silver")
 
+# sleep for 2 mins
+import time
+time.sleep(120)
+
 
 # COMMAND ----------
 
