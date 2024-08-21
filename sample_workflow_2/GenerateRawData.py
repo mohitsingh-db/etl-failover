@@ -8,4 +8,4 @@ data = [(i, ''.join(random.choices(string.ascii_letters + string.digits, k=10)),
 df = spark.createDataFrame(data, ["id", "name", "value"])
 
 # Write to raw table
-df.write.mode("overwrite").saveAsTable("dr_test_catalog.dr_test_raw.raw_data")
+df.write.mode("overwrite").saveAsTable("dr_test_catalog.raw.raw_data")

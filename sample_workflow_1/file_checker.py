@@ -1,6 +1,8 @@
 # Databricks notebook source
 # Define the source directory path
-source_directory = "s3://one-env-uc-external-location/mohit/east/data/ingestion/"  # Replace with your actual S3 path
+storageaccname = dbutils.widgets.get("storageaccname")
+
+source_directory = f"abfss://external@{storageaccname}.dfs.core.windows.net/data/ingestion/"  # Replace with your actual S3 path
 
 # Check if any files exist in the source directory
 files = dbutils.fs.ls(source_directory)

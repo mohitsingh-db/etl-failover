@@ -1,8 +1,9 @@
 # Databricks notebook source
 # Paths where the file is currently stored and where it will be archived
+storageaccname = dbutils.widgets.get("storageaccname")
 
-source_path = "s3://one-env-uc-external-location/mohit/east/data/ingestion/"
-archive_path = "s3://one-env-uc-external-location/mohit/east/data/archive/"
+source_path = f"abfss://external@{storageaccname}.dfs.core.windows.net/data/ingestion/"
+archive_path = f"abfss://external@{storageaccname}.dfs.core.windows.net/data/archive/"
 
 # Specify the file name (if known) or list and process files dynamically
 # Example: file_name = "sample_file_20240813_154530.txt"
