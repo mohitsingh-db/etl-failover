@@ -1,21 +1,21 @@
 { "secret_scope" : "dr-test-scope",
   "workspaces": [
     {
-      "workspace_name": "e2-demo-field-eng",
-      "workspace_instance_url": "https://e2-demo-field-eng.cloud.databricks.com",
-      "workspace_pat_key" : "dr-pat-token", 
-      "sync_location_primary": "s3://one-env-uc-external-location/mohit/east/sync/meta/primary_sync",
-      "sync_location_secondary": "s3://one-env-uc-external-location/mohit/central/sync/meta/secondary_sync",
+      "workspace_name": "dr_test_eastus2_databricks",
+      "workspace_instance_url": "https://adb-3942378291930718.18.azuredatabricks.net/",
+      "workspace_pat_key" : "dr-pat-key", 
+      "sync_location_primary": "abfss://dr-sync@eastus2drstorageacct.dfs.core.windows.net/",
+      "sync_location_secondary": "abfss://dr-sync@centralusdrstorageacct.dfs.core.windows.net/",
       "sync_failure_notification": "mohit.singh@databricks.com",
       "sync_success_notification": "mohit.singh@databricks.com",
       "sync_default_schedule": "0 */12 * * *",
       "sync_max_retries": "3",
       "sync_groups": [
         {
-          "group_name": "sample_workflow",
+          "group_name": "sample_workflow_1",
           "group_owner_email": "mohit.singh@databricks.com",
           "workflow": "sample_workflow_1",
-          "tables": ["humana.raw.workflow_1_bronze","humana.stage.workflow_1_silver","humana.main.workflow_1_gold"]
+          "tables": ["dr_test_catalog.raw.workflow_1_bronze","dr_test_catalog.stage.workflow_1_silver","dr_test_catalog.main.workflow_1_gold"]
         }
       ]
     }
