@@ -55,6 +55,14 @@ resource "databricks_external_location" "dr_eastus2_external_location" {
   comment         = "External location for data storage in eastus2"
 }
 
+resource "databricks_external_location" "dr_eastus2_sync_location" {
+  provider            = databricks.workspace
+  name            = "dr_eastus2_sync_location"
+  url             = "abfss://${azurerm_storage_container.dr_test_eastus2_dr_sync.name}@${azurerm_storage_account.dr_test_eastus2_storage.name}.dfs.core.windows.net/"
+  credential_name = databricks_storage_credential.dr_eastus2_storage_credential.name
+  comment         = "Sync location for data storage in eastus2"
+}
+
 resource "databricks_catalog" "dr_test_catalog" {
   provider            = databricks.workspace
   name               = "dr_test_catalog"

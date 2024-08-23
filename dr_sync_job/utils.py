@@ -146,6 +146,14 @@ def load_metadata_table(path: str) -> dict:
       }
     """
     try:
+        # Check if the path exists
+        dbutils.fs.ls(path)
+    except Exception as e:
+        log_message("debug", f"Path does not exist: {path}. Creating a new metadata table.")
+        create_empty_metadata_table(path)
+        return {}
+    
+    try:
         # Load the Delta table into a DataFrame
         df = spark.read.format("delta").load(path)
 
@@ -182,9 +190,6 @@ def load_metadata_table(path: str) -> dict:
 
     except Exception as e:
         log_message("debug",f"Error loading metadata table from path: {path}. Error: {e}")
-        log_message("debug",f"Creating a new metadata table at path: {path}")
-        if not dbutils.fs.ls(path):
-            create_empty_metadata_table(path)
         return {}
 
 def create_empty_metadata_table(path: str):

@@ -62,6 +62,14 @@ resource "databricks_external_location" "dr_centralus_external_location" {
   comment         = "External location for data storage in centralus"
 }
 
+resource "databricks_external_location" "dr_centralus_sync_location" {
+  provider            = databricks.workspace
+  name            = "dr_centralus_sync_location"
+  url             = "abfss://${azurerm_storage_container.dr_test_centralus_dr_sync.name}@${azurerm_storage_account.dr_test_centralus_storage.name}.dfs.core.windows.net/"
+  credential_name = databricks_storage_credential.dr_centralus_storage_credential.name
+  comment         = "Sync location for data storage in centralus"
+}
+
 resource "databricks_catalog" "dr_test_catalog" {
   provider            = databricks.workspace
   name               = "dr_test_catalog"
