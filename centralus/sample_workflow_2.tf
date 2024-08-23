@@ -26,7 +26,6 @@ resource "databricks_job" "workflow" {
   provider = databricks.workspace
   name = "sample_workflow_2"
   job_cluster {
-    job_cluster_key = "etl_job_cluster"
     new_cluster {
       num_workers   = 2
       spark_version = "14.3.x-scala2.12"
@@ -36,7 +35,6 @@ resource "databricks_job" "workflow" {
 
   task {
     task_key       = "GenerateRawData"
-    job_cluster_key = "etl_job_cluster"
     notebook_task {
       notebook_path = databricks_notebook.generate_raw_data.path
     }
@@ -44,7 +42,6 @@ resource "databricks_job" "workflow" {
 
   task {
     task_key       = "TransformToSilver"
-    job_cluster_key = "etl_job_cluster"
     depends_on {
       task_key = "GenerateRawData"
     }
@@ -55,7 +52,6 @@ resource "databricks_job" "workflow" {
 
   task {
     task_key       = "AggregateToGold"
-    job_cluster_key = "etl_job_cluster"
     depends_on {
       task_key = "TransformToSilver"
     }
@@ -65,8 +61,10 @@ resource "databricks_job" "workflow" {
   }
 
   schedule {
-    quartz_cron_expression = "0 0 * * * ?"
-    timezone_id            = "UTC"
-    pause_status           = "PAUSED"
+    quartz_cron_expression = "0 0/5 * * * ?"  # Cron schedule for every 5 minutes
+    timezone_id = "UTC"
+    
+    # Pause/Unpause setting: 'UNPAUSED' = active, 'PAUSED' = paused
+    pause_status = "PAUSED"  # Set to "PAUSED" to initially pause the job
   }
 }

@@ -39,40 +39,6 @@ resource "databricks_notebook" "gold" {
   provider       = databricks.workspace
 }
 
-# Create an all-purpose single-node cluster with specified configuration for Azure
-resource "databricks_cluster" "etl_cluster" {
-  cluster_name        = "Etl Cluster"
-  spark_version       = "14.3.x-scala2.12"
-  num_workers         = 0
-  node_type_id        = "Standard_D4ds_v5"
-  autotermination_minutes = 20
-  enable_elastic_disk = true
-  runtime_engine      = "PHOTON"
-  single_user_name    = "mohit.singh@databricks.com"
-  data_security_mode  = "SINGLE_USER"
-
-  spark_conf = {
-    "spark.master"                          = "local[*, 4]"
-    "spark.databricks.cluster.profile"      = "singleNode"
-  }
-
-  azure_attributes {
-    first_on_demand        = 1
-    availability           = "ON_DEMAND_AZURE"
-    spot_bid_max_price     = -1
-  }
-
-  custom_tags = {
-    "ResourceClass" = "SingleNode"
-  }
-
-  spark_env_vars = {
-    "PYSPARK_PYTHON" = "/databricks/python3/bin/python3"
-  }
-
-  provider = databricks.workspace
-}
-
 # Create a Databricks Job (workflow) with multiple tasks using the all-purpose cluster
 resource "databricks_job" "sample_workflow_1" {
   name = "sample_workflow_1"
@@ -89,7 +55,6 @@ resource "databricks_job" "sample_workflow_1" {
     notebook_task {
       notebook_path = "/Workspace/sample_workflow_1/file_checker"
     }
-    existing_cluster_id = databricks_cluster.etl_cluster.id
   }
 
   task {
@@ -113,7 +78,6 @@ resource "databricks_job" "sample_workflow_1" {
     notebook_task {
       notebook_path = "/Workspace/sample_workflow_1/bronze"
     }
-    existing_cluster_id = databricks_cluster.etl_cluster.id
   }
 
   task {
@@ -124,7 +88,6 @@ resource "databricks_job" "sample_workflow_1" {
     notebook_task {
       notebook_path = "/Workspace/sample_workflow_1/silver"
     }
-    existing_cluster_id = databricks_cluster.etl_cluster.id
   }
 
   task {
@@ -135,7 +98,6 @@ resource "databricks_job" "sample_workflow_1" {
     notebook_task {
       notebook_path = "/Workspace/sample_workflow_1/archive"
     }
-    existing_cluster_id = databricks_cluster.etl_cluster.id
   }
 
   task {
@@ -146,6 +108,13 @@ resource "databricks_job" "sample_workflow_1" {
     notebook_task {
       notebook_path = "/Workspace/sample_workflow_1/gold"
     }
-    existing_cluster_id = databricks_cluster.etl_cluster.id
+  }
+
+  schedule {
+    quartz_cron_expression = "0 0/5 * * * ?"  # Cron schedule for every 5 minutes
+    timezone_id = "UTC"
+    
+    # Pause/Unpause setting: 'UNPAUSED' = active, 'PAUSED' = paused
+    pause_status = "PAUSED"  # Set to "PAUSED" to initially pause the job
   }
 }
