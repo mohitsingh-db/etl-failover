@@ -25,13 +25,6 @@ resource "databricks_notebook" "aggregate_to_gold" {
 resource "databricks_job" "workflow" {
   provider = databricks.workspace
   name = "sample_workflow_2"
-  job_cluster {
-    new_cluster {
-      num_workers   = 2
-      spark_version = "14.3.x-scala2.12"
-      node_type_id  = "Standard_DS3_v2"
-    }
-  }
 
   task {
     task_key       = "GenerateRawData"
