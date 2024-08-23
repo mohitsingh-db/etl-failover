@@ -13,6 +13,7 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
     Process a single workflow: Check for new commits, then do API call and deep clone if required.
     Also, update the metadata table with sync status only when there is a deep clone performed.
     """
+    
     (workspace_name, group_name), metadata = workflow_data
     tables = metadata["tables"]
     validated = metadata.get("validated", None)  # Can be None if not available

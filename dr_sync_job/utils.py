@@ -281,7 +281,7 @@ def get_databricks_jobs_info(instance_url: str, pat_scope: str, pat_token: str, 
         log_message("error",f"Error fetching job info for workflows '{workflow_names}': {e}")
         return {}
 
-def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids: list, last_run_timestamp_str: str = None) -> dict:
+def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids: list, last_run_timestamp=None) -> dict:
     """
     Checks if any of the given Databricks jobs have had successful runs after the last recorded run timestamp.
 
@@ -289,17 +289,20 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
     - instance_url (str): The URL of the Databricks instance.
     - pat_token (str): The PAT token for authentication.
     - job_ids (list): A list of job IDs to check.
-    - last_run_timestamp_str (str, optional): The timestamp of the last recorded run in UTC format "yyyy-mm-dd hh:mm:ss".
-      If None, the function will return the latest successful run without comparison.
+    - last_run_timestamp (str or datetime, optional): The timestamp of the last recorded run in either UTC string 
+      format "yyyy-mm-dd hh:mm:ss" or as a datetime object. If None, the function will return the latest successful 
+      run without comparison.
 
     Returns:
     - dict: A dictionary where the keys are job IDs and the values are the last successful run end timestamps.
             If no successful run is found after the given timestamp, the value will be None.
     """
     try:
-        if last_run_timestamp_str is not None:
-            # Convert the input timestamp string to a datetime object in UTC
-            last_run_timestamp = datetime.strptime(last_run_timestamp_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
+        # Handle conversion of last_run_timestamp if it's a string
+        if isinstance(last_run_timestamp, str):
+            last_run_timestamp = datetime.strptime(last_run_timestamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
+        elif isinstance(last_run_timestamp, datetime):
+            last_run_timestamp = last_run_timestamp.replace(tzinfo=pytz.UTC)
         else:
             last_run_timestamp = None
 
@@ -346,7 +349,7 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
                         last_successful_run_end_time = run_end_datetime.strftime("%Y-%m-%d %H:%M:%S")
                         break
                 elif run_end_datetime > last_run_timestamp and run_result_state == "SUCCESS":
-                    log_message("debug",f"run_end_datetime is {run_end_datetime} and last_run_timestamp is {last_run_timestamp}")
+                    log_message("debug", f"run_end_datetime is {run_end_datetime} and last_run_timestamp is {last_run_timestamp}")
                     last_successful_run_end_time = run_end_datetime.strftime("%Y-%m-%d %H:%M:%S")
                     break  # Exit the loop early as we found a successful run
 
@@ -356,7 +359,7 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
         return successful_runs
 
     except requests.exceptions.RequestException as e:
-        log_message("error",f"Error checking job runs: {e}")
+        log_message("error", f"Error checking job runs: {e}")
         return {}
 
 def retrieve_pat_token(secret_scope: str, pat_key: str) -> str:
