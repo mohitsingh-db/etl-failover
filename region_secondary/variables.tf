@@ -2,11 +2,11 @@
 variable "region" {
   description = "The Azure region where resources will be deployed"
   type        = string
-  default     = "centralus"  
+  default     = "westus2"  
 }
 
 variable "location" {
   description = "The Azure region where resources will be deployed"
   type        = string
-  default     = "Central US"  
+  default     = "West US 2"  
 }

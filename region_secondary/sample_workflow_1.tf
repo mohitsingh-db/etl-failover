@@ -47,7 +47,7 @@ resource "databricks_job" "sample_workflow_1" {
 
   parameter {
     name   = "storageaccname"
-    default = azurerm_storage_account.dr_test_centralus_storage.name
+    default = azurerm_storage_account.dr_test_westus2_storage.name
   }
 
   task {

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Input parameters
-storageaccname="centralusdrstorageacct"
+storageaccname="westus2drstorageacct"
 storageaccname2="eastus2drstorageacct"
 container1="external"
 container2="external"

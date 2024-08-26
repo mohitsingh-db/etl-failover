@@ -92,3 +92,30 @@ resource "databricks_schema" "main" {
   catalog_name = databricks_catalog.dr_test_catalog.name
   comment    = "Schema for gold data"
 }
+
+
+data "terraform_remote_state" "westus2" {
+  backend = "local"
+  config = {
+    path = "../region_secondary/terraform.tfstate"
+  }
+
+  depends_on = [databricks_schema.main]
+}
+
+resource "databricks_storage_credential" "dr_cross_westus2_storage_credential" {
+  provider            = databricks.workspace
+  name = "dr_cross_westus2_storage_credential"
+  
+  azure_managed_identity {
+    access_connector_id = data.terraform_remote_state.westus2.outputs.westus2_access_connector_id
+  }
+}
+
+resource "databricks_external_location" "dr_cross_westus2_sync_location" {
+  provider            = databricks.workspace
+  name            = "dr_cross_westus2_sync_location"
+  url             = "abfss://${data.terraform_remote_state.westus2.outputs.westus2_dr_sync_container_name}@${data.terraform_remote_state.westus2.outputs.westus2_storage_account_name}.dfs.core.windows.net/"
+  credential_name = databricks_storage_credential.dr_cross_westus2_storage_credential.name
+  comment         = "Sync location for data storage in westus2"
+}
