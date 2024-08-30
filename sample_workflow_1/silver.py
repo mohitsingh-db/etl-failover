@@ -20,7 +20,7 @@ silver_df.write.format("delta").mode("overwrite").saveAsTable("dr_test_catalog.s
 
 # sleep for 2 mins
 import time
-time.sleep(120)
+time.sleep(20)
 
 
 # COMMAND ----------

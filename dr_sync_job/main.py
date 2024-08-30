@@ -49,8 +49,7 @@ if operation_type == "sender":
     validate_workflow_and_tables(validated_config, sync_location_to)    
     sync_to_region(
         validated_config,        # The validated configuration dictionary containing workspace and sync details
-        sync_location_to,      # Use the 'primary' or 'secondary' sync location
-        sync_interval_hours=10,  # Recheck groups that haven't been synced for at least 10 hours
+        sync_location_to=sync_location_to,      # Use the 'primary' or 'secondary' sync location
         max_workers=10           # Use up to 10 threads for parallel processing of workflows
     )
 elif operation_type == "receiver":

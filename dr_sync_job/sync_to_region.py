@@ -8,7 +8,7 @@ from pyspark.sql import functions as F
 # Global variable to collect info-level logs for successful workflows
 successful_workflows = []
 
-def process_workflow_to_region(workflow_data, instance_url, pat_token, target_location, metadata_table_path):
+def process_workflow_to_region(workflow_data, instance_url, pat_token, target_location, metadata_table_path, sync_interval_mins, sync_failover_interval_mins):
     """
     Process a single workflow: Check for new commits, then do API call and deep clone if required.
     Also, update the metadata table with sync status only when there is a deep clone performed.
@@ -65,9 +65,17 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
                 log_message("debug", f"Found successful runs for workflow {workflow_id} after {last_sync_time} as {successful_runs}")
                 if workflow_id not in successful_runs or not successful_runs[workflow_id]:
                     log_message("debug", f"No successful runs found for workflow {workflow_id} after {last_sync_time}. Skipping sync.")
-                    return
+                    
+                    # Check if the current time minus last_sync_time exceeds sync_failover_interval_mins
+                    current_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
+                    last_sync_datetime = last_sync_time if isinstance(last_sync_time, datetime) else datetime.strptime(last_sync_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
+                    if (current_time - last_sync_datetime).total_seconds() / 60 > sync_failover_interval_mins:
+                        log_message("warning", f"Sync failover interval exceeded for {group_name}, proceeding with sync.")
+                    else:
+                        return
 
-                last_successful_timestamp = successful_runs[workflow_id]
+                last_successful_timestamp = successful_runs[workflow_id] if successful_runs[workflow_id] else (last_sync_datetime + timedelta(minutes=sync_failover_interval_mins))
+                log_message("debug", f"Using last successful run timestamp: {last_successful_timestamp}")
 
                 # Step 4: Update status to 'In Progress' after workflow check and before deep cloning
                 update_metadata_status(metadata_table_path, workspace_name, group_name, "In Progress")
@@ -104,19 +112,34 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
         # Step 4: If there is no workflow_id, proceed directly with deep clone for the tables
         else:
             # Handle groups without workflows, perform deep clone for each table
-            for catalog, schema, table_name in parsed_tables:
-                source_table = f"{catalog}.{schema}.{table_name}"
-                target_table_path = f"{target_location}/{catalog}/{schema}/{table_name}"
+            proceed = False
+            current_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
+            if last_sync_time is not None:
+                last_sync_datetime = last_sync_time if isinstance(last_sync_time, datetime) else datetime.strptime(last_sync_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
+                if (current_time - last_sync_datetime).total_seconds() / 60 > sync_interval_mins:
+                    proceed = True
+            else:
+                proceed = True        
+            # Perform sync only if current timestamp - last_sync_time > sync_interval_mins
+            if proceed:
+                for catalog, schema, table_name in parsed_tables:
+                    source_table = f"{catalog}.{schema}.{table_name}"
+                    target_table_path = f"{target_location}/{catalog}/{schema}/{table_name}"
 
-                # Perform deep clone only if table does not exist
-                sql_command = f"""
-                    CREATE OR REPLACE TABLE delta.`{target_table_path}` 
-                    DEEP CLONE {source_table}
-                """
-                log_message("debug", f"Executing SQL command: {sql_command}")
-                spark.sql(sql_command)
+                    # Perform deep clone only if table does not exist
+                    sql_command = f"""
+                        CREATE OR REPLACE TABLE delta.`{target_table_path}` 
+                        DEEP CLONE {source_table}
+                    """
+                    log_message("debug", f"Executing SQL command: {sql_command}")
+                    spark.sql(sql_command)
 
-                log_message("debug", f"Deep cloned table {source_table} to {target_table_path}")
+                    log_message("debug", f"Deep cloned table {source_table} to {target_table_path}")
+                
+                last_successful_timestamp = current_time
+            else:
+                log_message("debug", f"Sync interval not met for group {group_name}, skipping.")
+                return
 
         # Step 5: After successful cloning, update metadata to 'Success' and set sync time
         sync_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -138,14 +161,16 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
         log_message("error", f"Error processing workflow {workspace_name}/{group_name}: {e}")
 
 
-def sync_to_region(validated_config: dict, sync_location_to: str = "primary", sync_interval_hours: int = 10, max_workers: int = 10):
+
+def sync_to_region(validated_config: dict, sync_location_to: str = "primary", max_workers: int = 10):
     """
     Syncs Delta tables from metadata with multi-threading and two levels of logging: debug and info.
 
     Args:
     - validated_config (dict): The validated configuration containing workspace and sync details.
     - sync_location_to (str): Specify 'primary' or 'secondary' to choose the sync location.
-    - sync_interval_hours (int): Number of hours before rechecking groups without workflows.
+    - sync_interval_mins (int): Number of mins before rechecking groups without workflows.
+    - sync_failover_interval_mins (int): Number of mins after which a table would be synced irrespective of workflow complition.
     - max_workers (int): Max threads for parallel processing.
     - logging_level (str): Either 'info' for summary or 'debug' for detailed logging.
 
@@ -172,6 +197,8 @@ def sync_to_region(validated_config: dict, sync_location_to: str = "primary", sy
                 # Retrieve the actual PAT token using the scope and key
                 secret_scope = validated_config.get("secret_scope")
                 pat_key = workspace['workspace_pat_key']
+                sync_failover_interval_mins = workspace['sync_failover_interval_mins']
+                sync_interval_mins = workspace['sync_failover_interval_mins']
                 pat_token = retrieve_pat_token(secret_scope, pat_key)
                 if pat_token is None:
                     log_message("info", f"Error retrieving PAT token for workspace: {workspace_name}, skipping sync.")
@@ -194,7 +221,7 @@ def sync_to_region(validated_config: dict, sync_location_to: str = "primary", sy
                     instance_url = workspace['workspace_instance_url']
 
                     # Submit each workflow for concurrent processing
-                    future = executor.submit(process_workflow_to_region, workflow_data, instance_url, pat_token, sync_location, metadata_table_path)
+                    future = executor.submit(process_workflow_to_region, workflow_data, instance_url, pat_token, sync_location, metadata_table_path, sync_interval_mins, sync_failover_interval_mins)
                     futures.append(future)
 
             # Step 5: Wait for all futures to complete

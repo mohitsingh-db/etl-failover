@@ -51,9 +51,13 @@ def validate_config(config: dict) -> dict:
             return {}
 
         # Handle optional fields with defaults
-        if not workspace.get('sync_default_schedule'):
+        if not workspace.get('sync_interval_mins'):
             log_message("debug",f"Warning: Sync default schedule is missing for workspace '{workspace['workspace_name']}'. Using default schedule: every 12 hours.")
-            workspace['sync_default_schedule'] = "0 */12 * * *"
+            workspace['sync_interval_mins'] = 720
+
+        if not workspace.get('sync_failover_interval_mins'):
+            log_message("debug",f"Warning: Sync default schedule is missing for workspace '{workspace['workspace_name']}'. Using default schedule: every 12 hours.")
+            workspace['sync_interval_mins'] = 2160
 
         if not workspace.get('sync_max_retries'):
             log_message("debug",f"Warning: Sync max retries is missing for workspace '{workspace['workspace_name']}'. Using default max retries: 3.")
@@ -91,7 +95,7 @@ def validate_config(config: dict) -> dict:
     log_message("debug",f"{'Workspace Name':<25} {'Groups Validated':<20} {'Default Schedule':<20} {'Max Retries':<10}")
     for workspace in validated_config['workspaces']:
         num_groups = len(workspace['sync_groups'])
-        log_message("debug",f"{workspace['workspace_name']:<25} {num_groups:<20} {workspace['sync_default_schedule']:<20} {workspace['sync_max_retries']:<10}")
+        log_message("debug",f"{workspace['workspace_name']:<25} {num_groups:<20} {workspace['sync_interval_mins']:<20} {workspace['sync_max_retries']:<10}")
 
     return validated_config
 
@@ -187,7 +191,16 @@ def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary"
                     log_message("debug",f"Error: Could not validate workflow '{group['workflow']}' for group '{group_name}' in workspace '{workspace['workspace_name']}': {e}")
                     all_valid = False
                     continue
-
+            else:
+                validation_entry = {
+                            'workspace_name': workspace['workspace_name'],
+                            'group_name': group_name,
+                            'workflow_name': "",
+                            'workflow_id': "",
+                            'tables': group.get('tables', []),
+                            'validated': False  # Mark as not validated until re-validation is done
+                        }
+                        
             # Validate tables existence and read permissions
             for table in group['tables']:
                 try:
