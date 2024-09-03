@@ -56,8 +56,8 @@ def validate_config(config: dict) -> dict:
             workspace['sync_interval_mins'] = 720
 
         if not workspace.get('sync_failover_interval_mins'):
-            log_message("debug",f"Warning: Sync default schedule is missing for workspace '{workspace['workspace_name']}'. Using default schedule: every 12 hours.")
-            workspace['sync_interval_mins'] = 2160
+            log_message("debug",f"Warning: Sync failover interval is missing for workspace '{workspace['workspace_name']}'. Using default failover interval: every 36 hours.")
+            workspace['sync_failover_interval_mins'] = 2160
 
         if not workspace.get('sync_max_retries'):
             log_message("debug",f"Warning: Sync max retries is missing for workspace '{workspace['workspace_name']}'. Using default max retries: 3.")
@@ -127,7 +127,7 @@ def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary"
         raise ValueError("sync_location_to must be either 'primary' or 'secondary'")
 
     for workspace in config['workspaces']:
-        log_message("debug",f"Validating workspace: {workspace.get('workspace_name', 'Unnamed')}")
+        log_message("info",f"Validating workspace: {workspace.get('workspace_name', 'Unnamed')}")
 
         # Determine sync location based on parameter
         sync_location = workspace.get(f"sync_location_{sync_location_to}")
@@ -135,7 +135,7 @@ def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary"
 
         # Check access to the sync location
         if not check_fs_path(meta_path):
-            log_message("debug",f"Error: No access to 'meta' path at {sync_location_to} sync location '{meta_path}' for workspace '{workspace['workspace_name']}'.")
+            log_message("error",f"No access to 'meta' path at {sync_location_to} sync location '{meta_path}' for workspace '{workspace['workspace_name']}'.")
             all_valid = False
             continue
 
@@ -148,24 +148,24 @@ def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary"
 
             # Check if this group is already validated in the metadata table
             validation_entry = metadata_table.get((workspace['workspace_name'], group_name), None)
-            log_message("debug",f"debug: validating sync group '{group_name}'. found entry {validation_entry}")
+            log_message("debug",f"validating sync group '{group_name}'. found entry {validation_entry}")
             
             # Handle potential deletions and changes in configuration
             if validation_entry:
                 # If the group has been deleted from the configuration, skip adding it to the new entries
-                validation_entry['workspace_name'] = workspace['workspace_name']
-                validation_entry['group_name'] = group_name
                 if not any(g['group_name'] == group_name for g in workspace['sync_groups']):
-                    log_message("debug",f"Info: Sync group '{group_name}' no longer exists in configuration. Removing from metadata table.")
+                    log_message("debug",f"Sync group '{group_name}' no longer exists in configuration. Not adding to entry so that it get reoved from metadata table.")
                     continue
 
+                validation_entry['workspace_name'] = workspace['workspace_name']
+                validation_entry['group_name'] = group_name            
                 # Check for changes in workflow or tables
                 if (normalize(validation_entry['workflow_name']) != normalize(group.get('workflow'))) or (validation_entry['tables'] != group.get('tables')):
-                    log_message("debug",f"Info: Detected changes in sync group '{group_name}' configuration. Revalidating.")
+                    log_message("info",f"Detected changes in sync group '{group_name}' configuration. Revalidating.")
                     validation_entry['validated'] = False  # Mark as not validated for revalidation
 
             if validation_entry and validation_entry['validated']:
-                log_message("debug",f"Info: Sync group '{group_name}' in workspace '{workspace['workspace_name']}' is already validated. Skipping validation.")
+                log_message("info",f"Sync group '{group_name}' in workspace '{workspace['workspace_name']}' is already validated. Skipping validation.")
                 new_metadata_entries.append(validation_entry)
                 continue
 
@@ -181,7 +181,7 @@ def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary"
                     )
 
                     if not job_info:
-                        log_message("debug",f"Error: Workflow '{group['workflow']}' does not exist for group '{group_name}' in workspace '{workspace['workspace_name']}'.")
+                        log_message("error",f"Workflow '{group['workflow']}' does not exist for group '{group_name}' in workspace '{workspace['workspace_name']}'.")
                         all_valid = False
                         continue
                     else:
@@ -195,7 +195,7 @@ def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary"
                             'validated': False  # Mark as not validated until re-validation is done
                         }
                 except Exception as e:
-                    log_message("debug",f"Error: Could not validate workflow '{group['workflow']}' for group '{group_name}' in workspace '{workspace['workspace_name']}': {e}")
+                    log_message("error",f"Could not validate workflow '{group['workflow']}' for group '{group_name}' in workspace '{workspace['workspace_name']}': {e}")
                     all_valid = False
                     continue
             else:
@@ -212,10 +212,10 @@ def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary"
             for table in group['tables']:
                 try:
                     if not check_table(table):
-                        log_message("debug",f"Error: Cannot access table '{table}' for group '{group_name}' in workspace '{workspace['workspace_name']}'.")
+                        log_message("error",f"Cannot access table '{table}' for group '{group_name}' in workspace '{workspace['workspace_name']}'.")
                         all_valid = False
                 except Exception as e:
-                    log_message("debug",f"Error: Could not validate table '{table}' for group '{group_name}' in workspace '{workspace['workspace_name']}': {e}")
+                    log_message("error",f"Could not validate table '{table}' for group '{group_name}' in workspace '{workspace['workspace_name']}': {e}")
                     all_valid = False
 
             # If validation was successful, update the metadata entry as validated

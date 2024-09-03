@@ -2,6 +2,7 @@
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+import time
 import pytz
 from pyspark.sql import functions as F
 
@@ -43,12 +44,11 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
                 break  # No need to check further tables, but they will still be part of the deep clone
             else:
                 # If last_sync_time is available, check for new commits
-                last_sync_datetime = last_sync_time if isinstance(last_sync_time, datetime) else datetime.strptime(last_sync_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
-                new_commits = history_df.filter(history_df['timestamp'] > last_sync_datetime).count()
+                new_commits = history_df.filter(F.col('timestamp') > F.from_unixtime(F.lit(last_sync_time) / 1000).cast("timestamp")).count()
 
                 if new_commits > 0:
                     new_commits_found = True
-                    log_message("debug", f"workflow: {group_name}, table: {source_table} Last successful time:  {last_sync_datetime} new commit found: {new_commits_found}")
+                    log_message("debug", f"workflow: {group_name}, table: {source_table} Last successful time:  {last_sync_time} new commit found: {new_commits_found}")
                     break  # Stop checking further tables once we find new commits
 
         # If no new commits and not the first sync, skip the workflow without updating metadata
@@ -63,33 +63,35 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
                 if workflow_id not in successful_runs or not successful_runs[workflow_id]:
                     log_message("debug", f"No successful runs found for workflow {workflow_id} after {last_sync_time} successful_runs are {successful_runs}. Skipping normal sync.")
                     
-                    # Check if the current time minus last_sync_time exceeds sync_failover_interval_mins
-                    current_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
-                    last_sync_datetime = last_sync_time.replace(tzinfo=pytz.UTC) if isinstance(last_sync_time, datetime) else datetime.strptime(last_sync_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
-                    if (current_time - last_sync_datetime).total_seconds() / 60 > sync_failover_interval_mins:
-                        log_message("debug", f"Sync failover interval exceeded for {group_name} current time: {current_time} last_sync_datetime: {last_sync_datetime}, proceeding with sync.")
+                    # Check if the current_milliseconds minus last_sync_time exceeds sync_failover_interval_mins
+                    current_milliseconds = int(time.time() * 1000)
+                    elapsed_minutes = (current_milliseconds - last_sync_time) / 60000
+                    if elapsed_minutes > sync_failover_interval_mins:
+                        log_message("debug", f"Sync failover interval exceeded for {group_name} current time: {current_milliseconds} last_sync_datetime: {last_sync_time}, elappsed minute: {elapsed_minutes}, sync_failover_interval_mins: {sync_failover_interval_mins}  proceeding with failover sync.")
                     else:
                         return
 
-                last_successful_timestamp = successful_runs[workflow_id] if successful_runs[workflow_id] else (last_sync_datetime + timedelta(minutes=sync_failover_interval_mins))
-                log_message("debug", f"Using last successful run timestamp: {last_successful_timestamp}")
+                latest_successful_timestamp = successful_runs[workflow_id] if successful_runs[workflow_id] else (current_milliseconds)
+                log_message("debug", f"Using last successful run timestamp: {latest_successful_timestamp}")
 
                 # Step 4: Update status to 'In Progress' after workflow check and before deep cloning
                 update_metadata_status(metadata_table_path, workspace_name, group_name, "In Progress")
                 log_message("debug", f"Set 'In Progress' status for {workspace_name}/{group_name}")
 
-                # Step 5: Perform deep clone for each table, using the highest version before last_successful_timestamp
+                # Step 5: Perform deep clone for each table, using the highest version before latest_successful_timestamp
                 for catalog, schema, table_name in parsed_tables:
                     source_table = f"{catalog}.{schema}.{table_name}"
                     version_before_timestamp = (spark.sql(f"DESCRIBE HISTORY {source_table}")
-                        .filter(f"timestamp <= '{last_successful_timestamp}'")
+                        .filter(
+                            F.col("timestamp") <= F.from_unixtime(F.lit(latest_successful_timestamp) / 1000).cast("timestamp")
+                        )
                         .orderBy("timestamp", ascending=False)
                         .select("version", "timestamp")
                         .limit(1)
                         .collect())
 
                     if not version_before_timestamp:
-                        log_message("info", f"No valid version found before {last_successful_timestamp} for table {source_table}. Skipping.")
+                        log_message("info", f"No valid version found before {latest_successful_timestamp} for table {source_table}. Skipping.")
                         continue
 
                     latest_version_before_timestamp = version_before_timestamp[0]['version']
@@ -110,10 +112,12 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
         else:
             # Handle groups without workflows, perform deep clone for each table
             proceed = False
-            current_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
+            current_milliseconds = int(time.time() * 1000)
+            
             if last_sync_time is not None:
-                last_sync_datetime = last_sync_time if isinstance(last_sync_time, datetime) else datetime.strptime(last_sync_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
-                if (current_time - last_sync_datetime).total_seconds() / 60 > sync_interval_mins:
+                elapsed_minutes = (current_milliseconds - last_sync_time) / 60000
+                if elapsed_minutes > sync_interval_mins:
+                    log_message("debug", f"Sync interval met for group {group_name}, elapsed_minutes: {elapsed_minutes},sync_interval_mins: {sync_interval_mins}, syncing.")
                     proceed = True
             else:
                 proceed = True        
@@ -133,14 +137,14 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
 
                     log_message("debug", f"Deep cloned table {source_table} to {target_table_path}")
                 
-                last_successful_timestamp = current_time
+                latest_successful_timestamp = current_milliseconds
             else:
                 log_message("debug", f"Sync interval not met for group {group_name}, skipping.")
                 return
 
         # Step 5: After successful cloning, update metadata to 'Success' and set sync time
-        sync_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        update_metadata_status(metadata_table_path, workspace_name, group_name, "Success", last_successful_timestamp, sync_time)
+        sync_time = int(time.time() * 1000)
+        update_metadata_status(metadata_table_path, workspace_name, group_name, "Success", latest_successful_timestamp, sync_time)
         log_message("debug", f"Set 'Success' status for {workspace_name}/{group_name}")
 
         # Log summary info
@@ -150,7 +154,7 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
             'workflow_name': metadata['workflow_name'],
             'workflow_id': metadata['workflow_id'],
             'tables': metadata['tables'],
-            'last_successful_run_time': last_successful_timestamp,
+            'last_successful_run_time': latest_successful_timestamp,
             'sync_status': 'Success'
         })
     

@@ -1,4 +1,7 @@
 # Databricks notebook source
+import time
+from pyspark.sql import functions as F
+
 def sync_in_region(validated_config: dict, sync_location_from: str = "secondary", max_workers: int = 10):
     """
     Syncs Delta tables from an external location (abfss path) into Unity Catalog based on the sync times.
@@ -39,7 +42,7 @@ def sync_in_region(validated_config: dict, sync_location_from: str = "secondary"
                 continue
 
             # Step 4: Capture the current timestamp for sync_time_in_region
-            sync_time_in_region = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            sync_time_in_region = int(time.time() * 1000)
 
             # Step 5: Collect filtered rows and sync them in parallel
             records_to_sync = filtered_metadata_df.collect()  # Collect the filtered records to sync
@@ -117,7 +120,9 @@ def process_sync_to_region(workspace_name: str, group_name: str, metadata: dict,
 
             # Filter the history to get the version before sync_time_to_region
             version_before_timestamp = (history_df
-                                        .filter(f"timestamp <= '{sync_time_to_region}'")
+                                        .filter(
+                                            F.col("timestamp") <= F.from_unixtime(F.lit(sync_time_to_region) / 1000).cast("timestamp")
+                                         )
                                         .orderBy("timestamp", ascending=False)
                                         .select("version", "timestamp")
                                         .limit(1)
@@ -152,5 +157,3 @@ def process_sync_to_region(workspace_name: str, group_name: str, metadata: dict,
 
     except Exception as e:
         log_message("error", f"Error syncing {workspace_name}/{group_name}: {e}")
-
-

@@ -3,9 +3,12 @@ import requests
 import pytz
 import json
 from datetime import datetime
-from pyspark.sql.types import StructType, StructField, StringType, ArrayType, BooleanType, TimestampType
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, BooleanType, LongType
 from pyspark.sql import DataFrame
 import traceback
+import time
+import random
+
 
 # Define the schema of the metadata table, including new columns
 schema = StructType([
@@ -15,10 +18,10 @@ schema = StructType([
     StructField("workflow_id", StringType(), True),
     StructField("tables", ArrayType(StringType()), False),
     StructField("validated", BooleanType(), False),
-    StructField("last_successful_run_time", TimestampType(), True),
+    StructField("last_successful_run_time", LongType(), True),
     StructField("sync_status", StringType(), True),
-    StructField("sync_time_to_region", TimestampType(), True), 
-    StructField("sync_time_in_region", TimestampType(), True)
+    StructField("sync_time_to_region", LongType(), True), 
+    StructField("sync_time_in_region", LongType(), True)
 ])
 
 def log_message(level: str, message: str):
@@ -58,7 +61,7 @@ def find_workspace_config(workspace_name: str, validated_config: dict) -> dict:
     return None
     
 def update_metadata_status(metadata_table_path: str, workspace_name: str, group_name: str, 
-                           status: str = None, sync_time: str = None, sync_time_to_region: str = None, sync_time_in_region: str = None):
+                           status: str = None, sync_time: int = None, sync_time_to_region: int = None, sync_time_in_region: int = None):
     """
     Updates the metadata table with the current status and sync timestamps for the regions.
 
@@ -67,9 +70,9 @@ def update_metadata_status(metadata_table_path: str, workspace_name: str, group_
     - workspace_name (str): The workspace name of the group.
     - group_name (str): The group name.
     - status (str, optional): The sync status ('In Progress' or 'Success').
-    - sync_time (str, optional): The last sync time.
-    - sync_time_to_region (str, optional): The sync timestamp for the "to" region.
-    - sync_time_in_region (str, optional): The sync timestamp for the "in" region.
+    - sync_time (int, optional): The last sync time in epoch format.
+    - sync_time_to_region (int, optional): The sync timestamp for the "to" region in epoch format.
+    - sync_time_in_region (int, optional): The sync timestamp for the "in" region in epoch format.
 
     Returns:
     - None
@@ -85,11 +88,11 @@ def update_metadata_status(metadata_table_path: str, workspace_name: str, group_
         if status is not None:
             update_columns.append(f"sync_status = '{status}'")
         if sync_time is not None:
-            update_columns.append(f"last_successful_run_time = '{sync_time}'")
+            update_columns.append(f"last_successful_run_time = {sync_time}")
         if sync_time_to_region is not None:
-            update_columns.append(f"sync_time_to_region = '{sync_time_to_region}'")
+            update_columns.append(f"sync_time_to_region = {sync_time_to_region}")
         if sync_time_in_region is not None:
-            update_columns.append(f"sync_time_in_region = '{sync_time_in_region}'")
+            update_columns.append(f"sync_time_in_region = {sync_time_in_region}")
         
         # Join all update columns to form the SET part of the SQL query
         update_query += ", ".join(update_columns)
@@ -99,7 +102,7 @@ def update_metadata_status(metadata_table_path: str, workspace_name: str, group_
         
         # Execute the update query
         log_message("debug", f"Executing SQL update: {update_query}")
-        spark.sql(update_query)
+        execute_with_retry(update_query)
         
         log_message("debug", f"Metadata updated for {workspace_name}/{group_name} with the following: {update_columns}")
     
@@ -282,7 +285,7 @@ def get_databricks_jobs_info(instance_url: str, pat_scope: str, pat_token: str, 
         log_message("error",f"Error fetching job info for workflows '{workflow_names}': {e}")
         return {}
 
-def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids: list, last_run_timestamp=None) -> dict:
+def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids: list, last_run_timestamp: int = None) -> dict:
     """
     Checks if any of the given Databricks jobs have had successful runs after the last recorded run timestamp.
 
@@ -290,24 +293,14 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
     - instance_url (str): The URL of the Databricks instance.
     - pat_token (str): The PAT token for authentication.
     - job_ids (list): A list of job IDs to check.
-    - last_run_timestamp (str or datetime, optional): The timestamp of the last recorded run in either UTC string 
-      format "yyyy-mm-dd hh:mm:ss" or as a datetime object. If None, the function will return the latest successful 
-      run without comparison.
+    - last_run_timestamp (int, optional): The timestamp of the last recorded run in epoch time (milliseconds). 
+      If None, the function will return the latest successful run without comparison.
 
     Returns:
-    - dict: A dictionary where the keys are job IDs and the values are the last successful run end timestamps.
-            If no successful run is found after the given timestamp, the value will be None.
+    - dict: A dictionary where the keys are job IDs and the values are the last successful run end timestamps in 
+      epoch format (milliseconds). If no successful run is found after the given timestamp, the value will be None.
     """
     try:
-        # Handle conversion of last_run_timestamp if it's a string
-        if isinstance(last_run_timestamp, str):
-            last_run_timestamp = datetime.strptime(last_run_timestamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
-        elif isinstance(last_run_timestamp, datetime):
-            last_run_timestamp = last_run_timestamp.replace(tzinfo=pytz.UTC)
-        else:
-            last_run_timestamp = None
-
-        # Set up the headers for the API request
         headers = {
             "Authorization": f"Bearer {pat_token}"
         }
@@ -323,7 +316,8 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
             params = {
                 "job_id": job_id,
                 "completed_only": "true",
-                "limit": 25  # Limit the number of runs to retrieve (adjust as needed)
+                "limit": 25, 
+                "start_time_from": last_run_timestamp
             }
 
             # Make the request to the Databricks Jobs API to list job runs
@@ -333,26 +327,23 @@ def job_successful_run_after_last_run(instance_url: str, pat_token: str, job_ids
             # Parse the JSON response
             runs = response.json().get("runs", [])
 
-            # Variable to store the last successful run end time
+            # Variable to store the latest successful run end time after last_run_timestamp
             last_successful_run_end_time = None
 
-            # Iterate over the runs and check if there is a successful run after the last run
+            # Iterate over the runs and find the latest successful run after the last run
             for run in runs:
-                run_end_time = run.get("end_time", 0) / 1000  # Convert from milliseconds to seconds
-                run_end_datetime = datetime.fromtimestamp(run_end_time, tz=pytz.UTC)
+                run_end_time = run.get("end_time", 0)  # Timestamp in milliseconds
                 run_result_state = run.get("state", {}).get("result_state")
 
-                run_end_datetime = run_end_datetime.replace(microsecond=0)
-
-                if last_run_timestamp is None:
-                    # If no last run timestamp is provided, return the latest successful run
-                    if run_result_state == "SUCCESS":
-                        last_successful_run_end_time = run_end_datetime.strftime("%Y-%m-%d %H:%M:%S")
-                        break
-                elif run_end_datetime > last_run_timestamp and run_result_state == "SUCCESS":
-                    log_message("debug", f"run_end_datetime is {run_end_datetime} and last_run_timestamp is {last_run_timestamp}")
-                    last_successful_run_end_time = run_end_datetime.strftime("%Y-%m-%d %H:%M:%S")
-                    break  # Exit the loop early as we found a successful run
+                if run_result_state == "SUCCESS":
+                    if last_run_timestamp is None:
+                        # If no last run timestamp is provided, track the latest successful run
+                        if last_successful_run_end_time is None or run_end_time > last_successful_run_end_time:
+                            last_successful_run_end_time = run_end_time
+                    elif run_end_time > last_run_timestamp:
+                        # If the run is after the last known run timestamp, track the latest successful run
+                        if last_successful_run_end_time is None or run_end_time > last_successful_run_end_time:
+                            last_successful_run_end_time = run_end_time
 
             # Add the result to the dictionary
             successful_runs[job_id] = last_successful_run_end_time
@@ -427,9 +418,7 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
     """
     try:
         # Convert the new entries list into a DataFrame
-        print(f"new entries are {new_entries}")
         new_entries_df = spark.createDataFrame(new_entries, schema=schema)
-        display(new_entries_df)
         # Step 1: Create a temporary view from new_entries
         new_entries_df.createOrReplaceTempView("new_metadata")
 
@@ -481,10 +470,38 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
         """
 
         # Step 3: Execute the merge SQL
-        spark.sql(merge_sql)
+        execute_with_retry(merge_sql)
 
         log_message("debug",f"Metadata table merged successfully at: {metadata_table_path}")
 
     except Exception as e:
         error_details = traceback.format_exc()
         log_message("error", f"Error during metadata merge: {error_details}")
+
+def execute_with_retry(sql_query: str, max_retries: int = 3):
+    """
+    Executes a given SQL query with retry logic in case of failure.
+
+    Args:
+    - sql_query (str): The SQL query to be executed.
+    - max_retries (int): The maximum number of retry attempts (default is 3).
+
+    Returns:
+    - None
+    """
+    for attempt in range(max_retries):
+        try:
+            spark.sql(sql_query)
+            break  # Exit the loop if the query is successful
+
+        except Exception as e:
+            log_message("error", f"Error detected ({type(e).__name__}). Attempt {attempt + 1} of {max_retries}.")
+            
+            if attempt < max_retries - 1:
+                # Exponential backoff with jitter (randomness)
+                sleep_time = (10 * (attempt + 1)) + random.uniform(0, 2)
+                log_message("debug", f"Retrying after {sleep_time:.2f} seconds...")
+                time.sleep(sleep_time)
+            else:
+                log_message("error", f"Failed to execute SQL query after {max_retries} attempts.")
+                raise

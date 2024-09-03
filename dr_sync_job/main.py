@@ -64,3 +64,5 @@ else:
     raise ValueError(f"Invalid operation_type: {operation_type}. Must be either 'sender' or 'receiver'.")
 
 # COMMAND ----------
+
+display(spark.read.format("delta").load("abfss://dr-sync@westus2drstorageacct.dfs.core.windows.net/meta/sync_metadata_table"))
