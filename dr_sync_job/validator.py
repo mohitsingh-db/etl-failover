@@ -99,6 +99,9 @@ def validate_config(config: dict) -> dict:
 
     return validated_config
 
+def normalize(value):
+    return value if value is not None else ""
+
 def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary") -> bool:
     """
     This function performs detailed validation of workflows and tables within each workspace.
@@ -145,21 +148,25 @@ def validate_workflow_and_tables(config: dict, sync_location_to: str = "primary"
 
             # Check if this group is already validated in the metadata table
             validation_entry = metadata_table.get((workspace['workspace_name'], group_name), None)
-
+            log_message("debug",f"debug: validating sync group '{group_name}'. found entry {validation_entry}")
+            
             # Handle potential deletions and changes in configuration
             if validation_entry:
                 # If the group has been deleted from the configuration, skip adding it to the new entries
+                validation_entry['workspace_name'] = workspace['workspace_name']
+                validation_entry['group_name'] = group_name
                 if not any(g['group_name'] == group_name for g in workspace['sync_groups']):
                     log_message("debug",f"Info: Sync group '{group_name}' no longer exists in configuration. Removing from metadata table.")
                     continue
 
                 # Check for changes in workflow or tables
-                if (validation_entry['workflow_name'] != group.get('workflow')) or (validation_entry['tables'] != group.get('tables')):
+                if (normalize(validation_entry['workflow_name']) != normalize(group.get('workflow'))) or (validation_entry['tables'] != group.get('tables')):
                     log_message("debug",f"Info: Detected changes in sync group '{group_name}' configuration. Revalidating.")
                     validation_entry['validated'] = False  # Mark as not validated for revalidation
 
             if validation_entry and validation_entry['validated']:
                 log_message("debug",f"Info: Sync group '{group_name}' in workspace '{workspace['workspace_name']}' is already validated. Skipping validation.")
+                new_metadata_entries.append(validation_entry)
                 continue
 
             # Validate workflow existence

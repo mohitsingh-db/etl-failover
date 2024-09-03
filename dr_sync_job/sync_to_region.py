@@ -1,7 +1,7 @@
 # Databricks notebook source
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from pyspark.sql import functions as F
 
@@ -44,14 +44,12 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
             else:
                 # If last_sync_time is available, check for new commits
                 last_sync_datetime = last_sync_time if isinstance(last_sync_time, datetime) else datetime.strptime(last_sync_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
-                log_message("debug", f"Last successful sync for workflow {group_name}, table {source_table} was {last_sync_datetime}.")
                 new_commits = history_df.filter(history_df['timestamp'] > last_sync_datetime).count()
 
                 if new_commits > 0:
                     new_commits_found = True
+                    log_message("debug", f"workflow: {group_name}, table: {source_table} Last successful time:  {last_sync_datetime} new commit found: {new_commits_found}")
                     break  # Stop checking further tables once we find new commits
-
-        log_message("debug", f"Checked commits for {group_name}, new commits found: {new_commits_found}")
 
         # If no new commits and not the first sync, skip the workflow without updating metadata
         if not new_commits_found:
@@ -62,15 +60,14 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
         if workflow_id:
             if validated:
                 successful_runs = job_successful_run_after_last_run(instance_url, pat_token, [workflow_id], last_sync_time)
-                log_message("debug", f"Found successful runs for workflow {workflow_id} after {last_sync_time} as {successful_runs}")
                 if workflow_id not in successful_runs or not successful_runs[workflow_id]:
-                    log_message("debug", f"No successful runs found for workflow {workflow_id} after {last_sync_time}. Skipping sync.")
+                    log_message("debug", f"No successful runs found for workflow {workflow_id} after {last_sync_time} successful_runs are {successful_runs}. Skipping normal sync.")
                     
                     # Check if the current time minus last_sync_time exceeds sync_failover_interval_mins
                     current_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
-                    last_sync_datetime = last_sync_time if isinstance(last_sync_time, datetime) else datetime.strptime(last_sync_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
+                    last_sync_datetime = last_sync_time.replace(tzinfo=pytz.UTC) if isinstance(last_sync_time, datetime) else datetime.strptime(last_sync_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
                     if (current_time - last_sync_datetime).total_seconds() / 60 > sync_failover_interval_mins:
-                        log_message("warning", f"Sync failover interval exceeded for {group_name}, proceeding with sync.")
+                        log_message("debug", f"Sync failover interval exceeded for {group_name} current time: {current_time} last_sync_datetime: {last_sync_datetime}, proceeding with sync.")
                     else:
                         return
 

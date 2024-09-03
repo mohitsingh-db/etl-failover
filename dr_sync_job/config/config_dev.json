@@ -2,10 +2,10 @@
   "workspaces": [
     {
       "workspace_name": "dr_test_eastus2_databricks",
-      "workspace_instance_url": "https://adb-1164204460417135.15.azuredatabricks.net",
+      "workspace_instance_url": "https://adb-919371672615453.13.azuredatabricks.net",
       "workspace_pat_key" : "dr-pat-key", 
-      "sync_location_primary": "abfss://dr-sync@eastus2drstorageacct.dfs.core.windows.net/",
-      "sync_location_secondary": "abfss://dr-sync@westus2drstorageacct.dfs.core.windows.net/",
+      "sync_location_primary": "abfss://dr-sync@eastus2drstorageacct.dfs.core.windows.net",
+      "sync_location_secondary": "abfss://dr-sync@westus2drstorageacct.dfs.core.windows.net",
       "sync_failure_notification": "mohit.singh@databricks.com",
       "sync_success_notification": "mohit.singh@databricks.com",
       "sync_interval_mins": 15,

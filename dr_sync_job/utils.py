@@ -5,7 +5,21 @@ import json
 from datetime import datetime
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, BooleanType, TimestampType
 from pyspark.sql import DataFrame
+import traceback
 
+# Define the schema of the metadata table, including new columns
+schema = StructType([
+    StructField("workspace_name", StringType(), False),
+    StructField("group_name", StringType(), False),
+    StructField("workflow_name", StringType(), True),
+    StructField("workflow_id", StringType(), True),
+    StructField("tables", ArrayType(StringType()), False),
+    StructField("validated", BooleanType(), False),
+    StructField("last_successful_run_time", TimestampType(), True),
+    StructField("sync_status", StringType(), True),
+    StructField("sync_time_to_region", TimestampType(), True), 
+    StructField("sync_time_in_region", TimestampType(), True)
+])
 
 def log_message(level: str, message: str):
     """
@@ -170,10 +184,10 @@ def load_metadata_table(path: str) -> dict:
             validated = row['validated']
             last_successful_run_time = row['last_successful_run_time']
             sync_status = row['sync_status']
-            sync_time_to_region = row('sync_time_to_region', None)  
-            sync_time_in_region = row('sync_time_in_region', None) 
+            sync_time_to_region = row['sync_time_to_region']
+            sync_time_in_region = row['sync_time_in_region']
 
-            # Add the metadata to the dictionary
+            # Add the metadata to the dictionary with formatted timestamps
             metadata_dict[(workspace_name, group_name)] = {
                 "workflow_name": workflow_name,
                 "workflow_id": workflow_id,
@@ -199,22 +213,9 @@ def create_empty_metadata_table(path: str):
     Args:
     - path (str): The path where the Delta table will be created.
     """
-    # Define the schema of the metadata table, including new columns
-    schema = StructType([
-        StructField("workspace_name", StringType(), False),
-        StructField("group_name", StringType(), False),
-        StructField("workflow_name", StringType(), False),
-        StructField("workflow_id", StringType(), False),
-        StructField("tables", ArrayType(StringType()), False),
-        StructField("validated", BooleanType(), False),
-        StructField("last_successful_run_time", TimestampType(), True),
-        StructField("sync_status", StringType(), True),
-        StructField("sync_time_to_region", TimestampType(), True), 
-        StructField("sync_time_in_region", TimestampType(), True)
-    ])
-
+    
     # Create an empty DataFrame with the defined schema
-    empty_df = spark.createDataFrame([], schema)
+    empty_df = spark.createDataFrame([], schema=schema)
 
     # Write the empty DataFrame as a Delta table
     empty_df.write.format("delta").mode("overwrite").save(path)
@@ -426,8 +427,9 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
     """
     try:
         # Convert the new entries list into a DataFrame
-        new_entries_df = spark.createDataFrame(new_entries)
-
+        print(f"new entries are {new_entries}")
+        new_entries_df = spark.createDataFrame(new_entries, schema=schema)
+        display(new_entries_df)
         # Step 1: Create a temporary view from new_entries
         new_entries_df.createOrReplaceTempView("new_metadata")
 
@@ -484,4 +486,5 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
         log_message("debug",f"Metadata table merged successfully at: {metadata_table_path}")
 
     except Exception as e:
-        log_message("error",f"Error during metadata merge: {e}")
+        error_details = traceback.format_exc()
+        log_message("error", f"Error during metadata merge: {error_details}")
