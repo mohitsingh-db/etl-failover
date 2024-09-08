@@ -106,8 +106,10 @@ def process_sync_to_region(workspace_name: str, group_name: str, metadata: dict,
         if not sync_time_to_region:
             log_message("info", f"No sync_time_to_region found for {workspace_name}/{group_name}. Skipping.")
             return
-
+        target_operation_metrics = []
         for table in tables:
+            table_metrics = {}
+            table_metrics[table] = {"metrics": {}}
             # Parse the catalog, schema, and table name from the table string
             catalog, schema, table_name = table.split(".")
             
@@ -123,8 +125,11 @@ def process_sync_to_region(workspace_name: str, group_name: str, metadata: dict,
                                         .filter(
                                             F.col("timestamp") <= F.from_unixtime(F.lit(sync_time_to_region) / 1000).cast("timestamp")
                                          )
+                                        .filter(history_df.operation == "CLONE") 
                                         .orderBy("timestamp", ascending=False)
-                                        .select("version", "timestamp")
+                                        .select("version", (unix_timestamp("timestamp") * 1000).alias("timestamp"), 
+                                            col("operationParameters").getItem("sourceVersion").alias("sourceVersion"), 
+                                            col("operationMetrics").getItem("sourceTableSize").alias("sourceTableSize")) 
                                         .limit(1)
                                         .collect())
 
@@ -133,25 +138,29 @@ def process_sync_to_region(workspace_name: str, group_name: str, metadata: dict,
                 return
 
             latest_version_before_sync_time = version_before_timestamp[0]['version']
-
+            table_metrics[table]["metrics"]["sync_commit_version"] = version_before_timestamp[0]['sourceVersion']
             # Step 4: Perform deep clone using the version identified
             target_table = f"{catalog}.{schema}.{table_name}"
 
             sql_command = f"""
-                CREATE TABLE IF NOT EXISTS {target_table} 
+                REPLACE TABLE {target_table} 
                 DEEP CLONE delta.`{abfss_path}` VERSION AS OF {latest_version_before_sync_time}
             """
             log_message("debug", f"Executing SQL: {sql_command}")
             spark.sql(sql_command)
-
+            clonedf = spark.sql(sql_command)
+            size = clonedf.select("source_table_size").collect()[0]["source_table_size"]
+            table_metrics[table]["metrics"]["source_table_size"] = size
+            target_operation_metrics.append(table_metrics)
             log_message("info", f"Table {table} deep cloned into Unity Catalog at {target_table} using version {latest_version_before_sync_time}")
 
         # Step 5: Update the metadata with the sync_time_in_region
         update_metadata_status(
-            metadata_table_path, 
-            workspace_name, 
-            group_name, 
-            sync_time_in_region=sync_time_in_region
+            metadata_table_path = metadata_table_path, 
+            workspace_name = workspace_name, 
+            group_name = group_name, 
+            sync_time_in_region=sync_time_in_region,
+            target_operation_metrics=target_operation_metrics
         )
         log_message("debug", f"Updated sync_time_in_region for {workspace_name}/{group_name}")
 

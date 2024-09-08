@@ -8,6 +8,7 @@ from pyspark.sql import DataFrame
 import traceback
 import time
 import random
+from pyspark.sql.functions import lit, col, unix_timestamp
 
 
 # Define the schema of the metadata table, including new columns
@@ -20,8 +21,11 @@ schema = StructType([
     StructField("validated", BooleanType(), False),
     StructField("last_successful_run_time", LongType(), True),
     StructField("sync_status", StringType(), True),
+    StructField("sync_reason", StringType(), True),
     StructField("sync_time_to_region", LongType(), True), 
-    StructField("sync_time_in_region", LongType(), True)
+    StructField("sync_time_in_region", LongType(), True),
+    StructField("source_operation_metrics", StringType(), True),
+    StructField("target_operation_metrics", StringType(), True)
 ])
 
 def log_message(level: str, message: str):
@@ -61,9 +65,11 @@ def find_workspace_config(workspace_name: str, validated_config: dict) -> dict:
     return None
     
 def update_metadata_status(metadata_table_path: str, workspace_name: str, group_name: str, 
-                           status: str = None, sync_time: int = None, sync_time_to_region: int = None, sync_time_in_region: int = None):
+                           status: str = None, sync_time: int = None, sync_time_to_region: int = None, 
+                           sync_time_in_region: int = None, sync_reason: str = None, 
+                           source_operation_metrics: dict = None, target_operation_metrics: dict = None):
     """
-    Updates the metadata table with the current status and sync timestamps for the regions.
+    Updates the metadata table with the current status, sync timestamps, and metrics for the regions.
 
     Args:
     - metadata_table_path (str): Path to the metadata Delta table.
@@ -71,8 +77,11 @@ def update_metadata_status(metadata_table_path: str, workspace_name: str, group_
     - group_name (str): The group name.
     - status (str, optional): The sync status ('In Progress' or 'Success').
     - sync_time (int, optional): The last sync time in epoch format.
+    - sync_reason (str, optional): The reason for the sync.
     - sync_time_to_region (int, optional): The sync timestamp for the "to" region in epoch format.
     - sync_time_in_region (int, optional): The sync timestamp for the "in" region in epoch format.
+    - source_operation_metrics (dict, optional): Metrics related to the source operations.
+    - target_operation_metrics (dict, optional): Metrics related to the target operations.
 
     Returns:
     - None
@@ -93,6 +102,18 @@ def update_metadata_status(metadata_table_path: str, workspace_name: str, group_
             update_columns.append(f"sync_time_to_region = {sync_time_to_region}")
         if sync_time_in_region is not None:
             update_columns.append(f"sync_time_in_region = {sync_time_in_region}")
+        if sync_reason is not None:
+            update_columns.append(f"sync_reason = '{sync_reason}'")
+        
+        # Handle source_operation_metrics, converting to JSON string if provided
+        if source_operation_metrics is not None:
+            source_metrics_json = json.dumps(source_operation_metrics)
+            update_columns.append(f"source_operation_metrics = '{source_metrics_json}'")
+        
+        # Handle target_operation_metrics, converting to JSON string if provided
+        if target_operation_metrics is not None:
+            target_metrics_json = json.dumps(target_operation_metrics)
+            update_columns.append(f"target_operation_metrics = '{target_metrics_json}'")
         
         # Join all update columns to form the SET part of the SQL query
         update_query += ", ".join(update_columns)
@@ -100,14 +121,15 @@ def update_metadata_status(metadata_table_path: str, workspace_name: str, group_
         # Add WHERE clause to filter by workspace_name and group_name
         update_query += f" WHERE workspace_name = '{workspace_name}' AND group_name = '{group_name}'"
         
-        # Execute the update query
+        # Log and execute the update query
         log_message("debug", f"Executing SQL update: {update_query}")
         execute_with_retry(update_query)
         
         log_message("debug", f"Metadata updated for {workspace_name}/{group_name} with the following: {update_columns}")
     
     except Exception as e:
-        log_message("error", f"Failed to update metadata for {workspace_name}/{group_name}: {e}")
+        log_message("error", f"Error updating metadata: {str(e)}")
+        raise
 
 def check_fs_path(path: str) -> bool:
     """
@@ -439,8 +461,11 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
                     target.validated = source.validated,
                     target.last_successful_run_time = NULL,
                     target.sync_status = NULL,
+                    target.sync_reason = NULL,
                     target.sync_time_to_region = NULL,
-                    target.sync_time_in_region = NULL
+                    target.sync_time_in_region = NULL,
+                    target.source_operation_metrics = NULL,
+                    target.target_operation_metrics = NULL
             WHEN NOT MATCHED THEN
                 INSERT (
                     workspace_name, 
@@ -451,8 +476,11 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
                     validated, 
                     last_successful_run_time, 
                     sync_status,
+                    sync_reason,
                     sync_time_to_region,
-                    sync_time_in_region
+                    sync_time_in_region,
+                    source_operation_metrics,
+                    target_operation_metrics
                 ) VALUES (
                     source.workspace_name, 
                     source.group_name, 
@@ -461,6 +489,9 @@ def merge_metadata_entries(metadata_table_path: str, new_entries: list) -> None:
                     source.tables, 
                     source.validated, 
                     NULL, 
+                    NULL,
+                    NULL,
+                    NULL,
                     NULL,
                     NULL,
                     NULL

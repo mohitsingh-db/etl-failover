@@ -104,3 +104,17 @@ The JSON configuration file is loaded from a specified directory within the Data
     
     
 
+[
+  {
+    "table_name": "table1",
+    "source_metrics": {
+      "latest_commit_timestamp":24313525346,
+      "latest_commit_version":2,
+      "latest_commit_operation": "WRITE",
+      "sync_commit_timestamp": 24313525346,
+      "sync_commit_version":2,
+      "sync_commit_operation": "WRITE"
+    }
+  }
+]
+

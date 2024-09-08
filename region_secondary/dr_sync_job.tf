@@ -33,6 +33,13 @@ resource "databricks_notebook" "dr_sync_job_validator" {
   language       = "PYTHON"
 }
 
+resource "databricks_notebook" "dr_sync_job_report" {
+  provider = databricks.workspace
+  content_base64 = base64encode(file("../dr_sync_job/report.py"))
+  path           = "/Workspace/dr_sync_job/report"
+  language       = "PYTHON"
+}
+
 resource "databricks_workspace_file" "dr_sync_job_config" {
   provider = databricks.workspace  
   content_base64 = base64encode(file("../dr_sync_job/config/config_dev.json"))   

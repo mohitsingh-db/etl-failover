@@ -23,7 +23,9 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
     sync_status = metadata.get("sync_status", None)
 
     # Step 1: Parse all tables into a list of (catalog, schema, table_name)
+    source_operation_metrics = []
     parsed_tables = []
+    sync_reason = "workflow_time"
     for table in tables:
         catalog, schema, table_name = table.split(".")
         parsed_tables.append((catalog, schema, table_name))
@@ -67,6 +69,7 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
                     current_milliseconds = int(time.time() * 1000)
                     elapsed_minutes = (current_milliseconds - last_sync_time) / 60000
                     if elapsed_minutes > sync_failover_interval_mins:
+                        sync_reason = "threshold_time"
                         log_message("debug", f"Sync failover interval exceeded for {group_name} current time: {current_milliseconds} last_sync_datetime: {last_sync_time}, elappsed minute: {elapsed_minutes}, sync_failover_interval_mins: {sync_failover_interval_mins}  proceeding with failover sync.")
                     else:
                         return
@@ -80,13 +83,15 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
 
                 # Step 5: Perform deep clone for each table, using the highest version before latest_successful_timestamp
                 for catalog, schema, table_name in parsed_tables:
+                    table_metrics = {}
                     source_table = f"{catalog}.{schema}.{table_name}"
+                    table_metrics[source_table] = {"metrics": {}}
                     version_before_timestamp = (spark.sql(f"DESCRIBE HISTORY {source_table}")
                         .filter(
                             F.col("timestamp") <= F.from_unixtime(F.lit(latest_successful_timestamp) / 1000).cast("timestamp")
                         )
                         .orderBy("timestamp", ascending=False)
-                        .select("version", "timestamp")
+                        .select("version", (unix_timestamp("timestamp") * 1000).alias("timestamp"))
                         .limit(1)
                         .collect())
 
@@ -95,6 +100,9 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
                         continue
 
                     latest_version_before_timestamp = version_before_timestamp[0]['version']
+                    latest_timestamp_before_timestamp = version_before_timestamp[0]['timestamp']
+                    table_metrics[source_table]["metrics"]["sync_commit_timestamp"] = latest_timestamp_before_timestamp
+                    table_metrics[source_table]["metrics"]["sync_commit_version"] = latest_version_before_timestamp
 
                     # Run the deep clone SQL command with VERSION AS OF for each table
                     target_table_path = f"{target_location}/{catalog}/{schema}/{table_name}"
@@ -104,10 +112,11 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
                         DEEP CLONE {source_table} VERSION AS OF {latest_version_before_timestamp}
                     """
                     log_message("debug", f"Executing SQL command: {sql_command}")
-                    spark.sql(sql_command)
-
+                    clonedf = spark.sql(sql_command)
+                    size = clonedf.select("source_table_size").collect()[0]["source_table_size"]
+                    table_metrics[source_table]["metrics"]["source_table_size"] = size
                     log_message("debug", f"Deep cloned table {source_table} to {target_table_path} as of version {latest_version_before_timestamp}")
-
+                    source_operation_metrics.append(table_metrics)
         # Step 4: If there is no workflow_id, proceed directly with deep clone for the tables
         else:
             # Handle groups without workflows, perform deep clone for each table
@@ -123,8 +132,11 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
                 proceed = True        
             # Perform sync only if current timestamp - last_sync_time > sync_interval_mins
             if proceed:
+                sync_reason = "schedule_time"
                 for catalog, schema, table_name in parsed_tables:
+                    table_metrics = {}
                     source_table = f"{catalog}.{schema}.{table_name}"
+                    table_metrics[source_table] = {"metrics": {}}
                     target_table_path = f"{target_location}/{catalog}/{schema}/{table_name}"
 
                     # Perform deep clone only if table does not exist
@@ -133,10 +145,11 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
                         DEEP CLONE {source_table}
                     """
                     log_message("debug", f"Executing SQL command: {sql_command}")
-                    spark.sql(sql_command)
-
+                    clonedf = spark.sql(sql_command)
+                    size = clonedf.select("source_table_size").collect()[0]["source_table_size"]
+                    table_metrics[source_table]["metrics"]["source_table_size"] = size
+                    source_operation_metrics.append(table_metrics)
                     log_message("debug", f"Deep cloned table {source_table} to {target_table_path}")
-                
                 latest_successful_timestamp = current_milliseconds
             else:
                 log_message("debug", f"Sync interval not met for group {group_name}, skipping.")
@@ -144,7 +157,15 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
 
         # Step 5: After successful cloning, update metadata to 'Success' and set sync time
         sync_time = int(time.time() * 1000)
-        update_metadata_status(metadata_table_path, workspace_name, group_name, "Success", latest_successful_timestamp, sync_time)
+        update_metadata_status(
+            metadata_table_path = metadata_table_path, 
+            workspace_name = workspace_name, 
+            group_name = group_name, 
+            status = "Success", 
+            sync_time = latest_successful_timestamp, 
+            sync_time_to_region = sync_time, 
+            sync_reason= sync_reason, 
+            source_operation_metrics = source_operation_metrics)
         log_message("debug", f"Set 'Success' status for {workspace_name}/{group_name}")
 
         # Log summary info
@@ -160,8 +181,6 @@ def process_workflow_to_region(workflow_data, instance_url, pat_token, target_lo
     
     except Exception as e:
         log_message("error", f"Error processing workflow {workspace_name}/{group_name}: {e}")
-
-
 
 def sync_to_region(validated_config: dict, sync_location_to: str = "primary", max_workers: int = 10):
     """
